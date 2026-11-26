@@ -224,6 +224,10 @@ Alle Einstellungen greifen sofort unter **Powertools -> Einstellungen** und werd
 
 ## Changelog
 
+### v2.16.8
+- **Dateien über 20 MB beim Ablegen im Eingabefeld als native Dateireferenz einfügen (#46)**: Behält das native 20-MB-Limit für normale Dateien bei und fügt lokale Dateien über 20 MB ohne Einlesen des Dateiinhalts als native Dateireferenz ein (einschließlich gemischter Ablagen sowie Isolation von Seitenleiste und SSH-Remote-Fenstern).
+- **Kontextschutz für Seitenleisten-Menüübersetzungen in allen neun Sprachen (inkl. PR #82, danke an `@statertly-pixel`)**: Beschränkt `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles` und `Decorations` auf Menükontexte, damit gleichnamige Unterhaltungs- oder Projekttitel unverändert bleiben.
+
 ### v2.16.7
 - **Native Lokalisierung in neun Sprachen (inkl. Französisch-PR #80, danke an `@oxibys`)**: Ergänzt Französisch, Japanisch, Koreanisch, Deutsch, Spanisch und Russisch als modulare On-Demand-Sprachpakete (`lib/locales/` und `i18n.pack`-RPC) samt vollständiger READMEs in allen neun Sprachen.
 - **Übersetzung des Seitenleisten-Menüs „Anzeigeoptionen“ vervollständigt (#79)**: Ergänzt `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations` sowie menübezogenes `Project` ohne echte Projektnamen oder Code anzutasten.

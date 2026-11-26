@@ -224,6 +224,10 @@ Chaque réglage s'applique en temps réel dans **Powertools -> Paramètres** et 
 
 ## Historique des versions
 
+### v2.16.8
+- **Conversion des fichiers volumineux (> 20 Mo) déposés dans le compositeur en références natives (#46)** : conserve la limite native de 20 Mo pour les fichiers ordinaires et insère les fichiers locaux dépassant 20 Mo sous forme de références natives sans lire leur contenu, tout en préservant les pièces jointes normales lors des dépôts mixtes et en isolant la barre latérale ainsi que les fenêtres SSH distantes.
+- **Restriction des traductions du menu d'affichage de la barre latérale aux contextes de menu (intégrant la PR #82, merci `@statertly-pixel`)** : limite `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles` et `Decorations` aux menus dans les neuf langues afin de préserver les titres de conversations ou de projets homonymes.
+
 ### v2.16.7
 - **Localisation native en neuf langues (intégrant la PR #80 en français, merci `@oxibys`)** : ajout du français, du japonais, du coréen, de l'allemand, de l'espagnol et du russe via des packs modulaires chargés à la demande (`lib/locales/` et RPC `i18n.pack`), avec guides README complets dans les neuf langues.
 - **Traduction complète du menu Options d'affichage de la barre latérale (#79)** : traduction de `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations` et `Project` dans les menus sans affecter les noms de projets ni le code.

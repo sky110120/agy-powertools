@@ -355,7 +355,7 @@ test('only the selected language payload appears in desktop and Swarm boot sourc
 
 test('switching all languages restores text and leaves project names and code unchanged', () => {
   const node = (text, area) => ({nodeValue:text,isConnected:true,parentElement:{closest:s=>area && s.includes(area)}});
-  const nodes=[node('Sort Projects',''),node('Project','[role="menu"]'),node('Project',''),node('Sort Projects','code')];
+  const nodes=[node('Settings',''),node('Sort Projects','[role="menu"]'),node('Project','[role="menu"]'),node('Project',''),node('Sort Projects',''),node('Sort Projects','code')];
   const document={nodeType:9,createTreeWalker(){let i=0;return {nextNode:()=>nodes[i++]};},querySelectorAll:()=>[]};
   const context=vm.createContext({document,NodeFilter:{SHOW_TEXT:4},MutationObserver:class{observe(){}disconnect(){}},__agyToZhTw:toZhTw});
   vm.runInContext(readFileSync('lib/native-i18n.js','utf8'),context);
@@ -363,11 +363,133 @@ test('switching all languages restores text and leaves project names and code un
     context.__agyLocalePack=getLocalePack(lang);
     context.__agyLocalization.apply(lang,false);
     const t=context.__agyI18n.t;
-    assert.deepEqual(nodes.map(n=>n.nodeValue),[t('Sort Projects',lang),t('Project',lang),'Project','Sort Projects']);
+    assert.deepEqual(nodes.map(n=>n.nodeValue),[t('Settings',lang),t('Sort Projects',lang),t('Project',lang),'Project','Sort Projects','Sort Projects']);
     if (context.__agyLocalePack) assert.match(t('Your Plan: Gemini',lang),/Gemini/);
   }
   context.__agyLocalization.dispose();
-  assert.equal(nodes[0].nodeValue,'Sort Projects');
+  assert.equal(nodes[0].nodeValue,'Settings');
+  assert.equal(nodes[1].nodeValue,'Sort Projects');
+});
+
+test('sidebar menu-only labels translate only inside menu contexts across all 9 languages', () => {
+  const matchesSelector = (sel, area) => Boolean(area) && sel.split(',').includes(area);
+  const makeNode = (text, area) => {
+    const state = { area };
+    return {
+      nodeValue: text,
+      isConnected: true,
+      state,
+      parentElement: { closest: sel => matchesSelector(sel, state.area) ? {} : null }
+    };
+  };
+  const makeEl = (initialAttrs, area) => {
+    const attrs = new Map(Object.entries(initialAttrs));
+    return {
+      isConnected: true,
+      closest: sel => matchesSelector(sel, area) ? {} : null,
+      getAttribute: key => attrs.get(key) ?? null,
+      setAttribute: (key, value) => attrs.set(key, value),
+      hasAttribute: key => attrs.has(key),
+      removeAttribute: key => attrs.delete(key)
+    };
+  };
+  const expectedZhCn = {
+    'Sort Conversations': '会话排序',
+    'Sort Projects': '项目排序',
+    'Auto Pin': '自动置顶',
+    'Archived Only': '仅已归档',
+    'Subtitles': '副标题',
+    'Decorations': '显示项',
+    'Project': '项目'
+  };
+  const expectedFor = (label, lang) => {
+    if (lang === 'en') return label;
+    const pack = getLocalePack(lang);
+    if (pack) return pack.entries[label];
+    return lang === 'zh-TW' ? toZhTw(expectedZhCn[label]) : expectedZhCn[label];
+  };
+
+  assert.deepEqual(SUPPORTED_LANGUAGES, ['zh-CN', 'zh-TW', 'en', 'fr', 'ja', 'ko', 'de', 'es', 'ru']);
+
+  const menuNodes = menuLabels.map(label => makeNode(label, '[role="menu"]'));
+  const altMenuNodes = ['[role="menuitem"]', '[role="menuitemradio"]', '[role="listbox"]', 'label'].map(area => makeNode('Sort Projects', area));
+  const titleNodes = menuLabels.map(label => makeNode(label, ''));
+  const codeNodes = menuLabels.map(label => makeNode(label, 'code'));
+  const movingNode = makeNode('Sort Projects', '[role="menu"]');
+  const allNodes = [...menuNodes, ...altMenuNodes, ...titleNodes, ...codeNodes, movingNode];
+
+  const menuAttrEls = menuLabels.map(label => makeEl({ title: label }, '[role="menu"]'));
+  const outsideAttrEls = menuLabels.map(label => makeEl({ title: label, placeholder: label }, ''));
+  const allAttrEls = [...menuAttrEls, ...outsideAttrEls];
+
+  const document = {
+    nodeType: 9,
+    createTreeWalker() {
+      let i = 0;
+      return { nextNode: () => allNodes[i++] || null };
+    },
+    querySelectorAll: selector => selector.includes('[title]') ? allAttrEls : []
+  };
+  const context = vm.createContext({
+    document,
+    NodeFilter: { SHOW_TEXT: 4 },
+    MutationObserver: class { observe() {} disconnect() {} },
+    __agyToZhTw: toZhTw
+  });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const t = context.__agyI18n.t;
+
+  assert.equal(t('项目', 'en'), 'Projects');
+  assert.equal(t('项目排序', 'en'), 'Sort Projects');
+  assert.equal(t('Pull Requests', 'zh-CN'), 'Pull Requests');
+
+  for (const lang of SUPPORTED_LANGUAGES) {
+    context.__agyLocalePack = getLocalePack(lang);
+    context.__agyLocalization.apply(lang, false);
+    for (let i = 0; i < menuLabels.length; i++) {
+      const label = menuLabels[i];
+      const expected = expectedFor(label, lang);
+      assert.ok(expected, `${lang}: missing expected translation for ${label}`);
+      if (lang !== 'en') assert.notEqual(expected, label, `${lang}: expected localized text for ${label}`);
+      assert.equal(t(label, lang), expected, `${lang}: t(${label})`);
+      assert.equal(menuNodes[i].nodeValue, expected, `${lang}: menu node ${label}`);
+      assert.equal(titleNodes[i].nodeValue, label, `${lang}: non-menu title ${label} must stay unchanged`);
+      assert.equal(codeNodes[i].nodeValue, label, `${lang}: code block ${label} must stay unchanged`);
+      assert.equal(menuAttrEls[i].getAttribute('title'), expected, `${lang}: menu title attr ${label}`);
+      assert.equal(outsideAttrEls[i].getAttribute('title'), label, `${lang}: non-menu title attr ${label}`);
+      assert.equal(outsideAttrEls[i].getAttribute('placeholder'), label, `${lang}: non-menu placeholder attr ${label}`);
+      assert.equal(outsideAttrEls[i].hasAttribute('data-agy-original-title'), false);
+      assert.equal(outsideAttrEls[i].hasAttribute('data-agy-original-placeholder'), false);
+    }
+    for (const node of altMenuNodes) {
+      assert.equal(node.nodeValue, expectedFor('Sort Projects', lang), `${lang}: ${node.state.area}`);
+    }
+  }
+
+  context.__agyLocalePack = null;
+  context.__agyLocalization.apply('zh-CN', false);
+  assert.equal(movingNode.nodeValue, '项目排序');
+  movingNode.state.area = '';
+  context.__agyLocalePack = getLocalePack('fr');
+  context.__agyLocalization.apply('fr', false);
+  assert.equal(movingNode.nodeValue, 'Sort Projects');
+
+  for (let i = 0; i < menuLabels.length; i++) {
+    assert.equal(menuNodes[i].nodeValue, expectedFor(menuLabels[i], 'fr'));
+    assert.equal(menuAttrEls[i].getAttribute('title'), expectedFor(menuLabels[i], 'fr'));
+  }
+  context.__agyLocalization.dispose();
+  for (let i = 0; i < menuLabels.length; i++) {
+    const label = menuLabels[i];
+    assert.equal(menuNodes[i].nodeValue, label);
+    assert.equal(titleNodes[i].nodeValue, label);
+    assert.equal(codeNodes[i].nodeValue, label);
+    assert.equal(menuAttrEls[i].getAttribute('title'), label);
+    assert.equal(menuAttrEls[i].hasAttribute('data-agy-original-title'), false);
+  }
+  for (const node of altMenuNodes) {
+    assert.equal(node.nodeValue, 'Sort Projects');
+  }
 });
 
 test('locale data and the nine guides exclude forbidden separators', () => {

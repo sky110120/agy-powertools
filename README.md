@@ -224,6 +224,10 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.16.8
+- **输入框拖入超过 20 MB 大文件自动转为原生文件引用（#46）**：保留 Antigravity 原生 20 MB 附件限制不变；仅在拖入超过 20 MB 的本地文件时拦截（不读取文件内容），将绝对路径通过原生 Lexical Mention 管道直接插入为可点击的文件引用标签（支持 Windows 盘符、UNC/NAS、POSIX、空格、`#` 与中文路径）；普通文件原样透传，混合拖拽时普通文件继续正常附加、超限文件转为引用，自动隔离侧边栏拖拽与 SSH 远端窗口。
+- **侧边栏显示菜单翻译作用域保护（吸收 PR #82，感谢 `@statertly-pixel`）**：将 `Project`、`Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 等 7 个菜单词条在全部九种语言下均限定为仅在菜单/选项上下文内生效（同时覆盖文本节点与 `title`/`placeholder` 属性），避免恰好重名的会话或项目标题被误翻。
+
 ### v2.16.7
 - **新增六语种原生国际化支持（共九种界面语言，吸收法语 PR #80，感谢 `@oxibys`）**：
   - 在原有简体中文、繁體中文、English 基础上，新增法语（`Français`）、日语（`日本語`）、韩语（`한국어`）、德语（`Deutsch`）、西班牙语（`Español`）与俄语（`Русский`），完整覆盖插件面板、Antigravity 原生界面、Swarm 面板、伴生辅助页、日期选择器与系统提示。

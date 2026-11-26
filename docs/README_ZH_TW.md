@@ -224,6 +224,10 @@ sh ./install.sh
 
 ## 更新日誌
 
+### v2.16.8
+- **輸入框拖入超過 20 MB 大檔案自動轉為原生檔案引用（#46）**：保留 Antigravity 原生 20 MB 附件限制；超限本機檔案不讀取位元組，直接透過原生 Mention 管道插入為檔案引用標籤，混合拖曳時正常保留一般附件，並隔離側邊欄與 SSH 遠端視窗。
+- **側邊欄顯示選單翻譯作用域保護（整合 PR #82，感謝 `@statertly-pixel`）**：將 `Project`、`Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 限定於選單上下文內生效，避免同名會話或專案標題被誤翻。
+
 ### v2.16.7
 - **新增六語種原生在地化（共九種介面語言，整合法語 PR #80，感謝 `@oxibys`）**：新增法語、日語、韓語、德語、西班牙語與俄語，採模組化按需載入架構（`lib/locales/` 與 `i18n.pack` RPC），涵蓋外掛面板、原生介面、Swarm、伴生輔助頁與日曆，並同步補齊九語種說明文件。
 - **補齊側邊欄排序與篩選選單翻譯（#79）**：補上 `Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 與選單內 `Project` 詞條。

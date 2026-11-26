@@ -224,6 +224,10 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.16.8
+- **Convert oversized (> 20 MB) composer file drops into native file references (#46)**: Keeps Antigravity's native 20 MB attachment limit untouched for normal files; intercepts local files over 20 MB without reading their bytes and inserts each absolute path as a native clickable file reference mention (supporting Windows drives, UNC/NAS, POSIX, spaces, `#`, and Unicode paths). Preserves normal attachments during mixed drops and isolates sidebar drops and SSH remote windows.
+- **Scope sidebar display menu translations to menu contexts across all nine languages (incorporating PR #82, thanks `@statertly-pixel`)**: Restricts `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, and `Decorations` (for both text nodes and `title`/`placeholder` attributes) to menu/listbox/label contexts so matching conversation or project titles remain untouched.
+
 ### v2.16.7
 - **Nine-language native localization (incorporating French PR #80, thanks `@oxibys`)**:
   - Adds French (`Français`), Japanese (`日本語`), Korean (`한국어`), German (`Deutsch`), Spanish (`Español`), and Russian (`Русский`) alongside Simplified Chinese, Traditional Chinese, and English across Powertools panels, Antigravity native UI, Swarm iframes, sidecar aux pane, date-range calendar, and launcher prompts.

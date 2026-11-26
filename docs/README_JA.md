@@ -224,6 +224,10 @@ sh ./install.sh
 
 ## 変更履歴
 
+### v2.16.8
+- **20 MB 超のファイルを入力欄へドロップした際にネイティブ参照へ自動変換 (#46)**: Antigravity 標準の 20 MB 添付上限を維持したまま、20 MB を超えるローカルファイルのみ内容を読み込まず絶対パスのネイティブファイル参照として挿入します（混在ドロップ時の通常添付の維持、サイドバーおよび SSH リモートウィンドウの分離に対応）。
+- **サイドバー表示メニュー翻訳の適用範囲を保護（PR #82 を統合、`@statertly-pixel` 氏に感謝）**: `Project`、`Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` を全 9 言語でメニューコンテキスト内に限定し、同名の会話タイトルやプロジェクト名が誤訳されないようにしました。
+
 ### v2.16.7
 - **9 言語のネイティブ多言語対応（フランス語 PR #80 を統合、`@oxibys` 氏に感謝）**: フランス語、日本語、韓国語、ドイツ語、スペイン語、ロシア語を追加し、`lib/locales/` と `i18n.pack` RPC によるオンデマンド読み込みに対応しました。全 9 言語の README も整備しました。
 - **サイドバー表示オプションメニューの翻訳を補完 (#79)**: `Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` およびメニュー内の `Project` を追加しました。

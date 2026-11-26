@@ -224,6 +224,10 @@ sh ./install.sh
 
 ## 변경 이력
 
+### v2.16.8
+- **20 MB 초과 파일을 입력창에 드롭 시 네이티브 파일 참조로 자동 변환 (#46)**: Antigravity 기본 20 MB 첨부 제한을 유지하면서 20 MB 초과 로컬 파일만 내용을 읽지 않고 네이티브 파일 참조로 삽입합니다(혼합 드롭 시 일반 첨부 유지, 사이드바 및 SSH 원격 창 격리).
+- **사이드바 표시 메뉴 번역 컨텍스트 보호 (PR #82 통합, `@statertly-pixel` 감사)**: `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations` 항목을 9개 언어 모두에서 메뉴 컨텍스트로 한정하여 동일한 이름의 대화나 프로젝트 제목이 오역되지 않도록 했습니다.
+
 ### v2.16.7
 - **9개 언어 기본 다국어 지원 (프랑스어 PR #80 통합, `@oxibys` 기여)**: 프랑스어, 일본어, 한국어, 독일어, 스페인어, 러시아어를 모듈형 온디맨드 언어 팩(`lib/locales/` 및 `i18n.pack` RPC)으로 추가하고 9개 언어 README를 완비했습니다.
 - **사이드바 표시 옵션 메뉴 번역 보완 (#79)**: `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations` 및 메뉴 내 `Project` 항목을 추가했습니다.

@@ -224,6 +224,10 @@ Cada ajuste se aplica al instante en **Powertools -> Configuración** y se guard
 
 ## Registro de cambios
 
+### v2.16.8
+- **Conversión automática a referencia nativa al soltar archivos mayores de 20 MB en el editor (#46)**: Conserva el límite nativo de 20 MB para archivos normales e inserta los archivos locales mayores de 20 MB como referencias nativas sin leer sus bytes, preservando adjuntos normales en arrastres mixtos y aislando la barra lateral y las ventanas SSH remotas.
+- **Protección de contexto para las traducciones del menú de la barra lateral en los nueve idiomas (integra PR #82, gracias a `@statertly-pixel`)**: Restringe `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles` y `Decorations` a contextos de menú para no alterar títulos de conversaciones o proyectos con el mismo nombre.
+
 ### v2.16.7
 - **Localización nativa en nueve idiomas (integra el PR #80 en francés, gracias a `@oxibys`)**: Añade francés, japonés, coreano, alemán, español y ruso mediante paquetes modulares bajo demanda (`lib/locales/` y RPC `i18n.pack`), junto con guías README completas en los nueve idiomas.
 - **Traducción completa del menú Opciones de visualización en la barra lateral (#79)**: Añade `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations` y `Project` en menús sin afectar nombres de proyectos ni bloques de código.
