@@ -4,3 +4,6 @@ node_modules/
 dist/
 VERIFICATION.md
 scripts/verify-*.mjs
+
+# 本机字体验证记录，不提交或发布
+docs/local-font/

@@ -13,10 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p>
-    <a href="README.md">简体中文</a> |
-    <strong>English</strong>
-  </p>
+  <p><a href="README.md">简体中文</a> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <strong>English</strong> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a></p>
   <p>
     <a href="#screenshots">Screenshots</a> |
     <a href="#features">Features</a> |
@@ -86,7 +83,7 @@
   <tr>
     <td>
       <img src="docs/images/card-settings.png" alt="Language and display settings" width="100%" />
-      <p>Switch between Simplified Chinese, Traditional Chinese, and English, and toggle compact layout, user bubble tint, and quota halo window.</p>
+      <p>Choose from nine interface languages, and toggle compact layout, user bubble tint, and quota halo window.</p>
     </td>
     <td>
       <img src="docs/images/card-proxy.png" alt="No-TUN application proxy settings" width="100%" />
@@ -99,9 +96,9 @@
 
 ## Features
 
-- **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Localizes Powertools panels, common Antigravity menus, permission dialogs, settings, and Swarm iframes while leaving chat text and code blocks untouched.
+- **Multilingual UI**: Localizes Powertools panels, common Antigravity menus, permission dialogs, settings, and Swarm iframes while leaving chat text and code blocks untouched.
 - **Context and speed telemetry**: Adds a context usage ring (with cache reuse, compaction count, and Orchestrator planner/executor bars) and a speed dial (`tok/s`, TTFT, model vs. tool duration, and estimated session cost) next to the composer, including subagent stats.
-- **Local usage and request dashboard**: Adds a `Powertools` sidebar page with usage overview (53-week heatmap, token/cost donuts, model table), per-request log, short-interval cache anomaly flags, one-click error copy, quota estimates, and official API pricing refresh.
+- **Local usage and request dashboard**: Adds a `Powertools` sidebar page combining Desktop and `agy` CLI usage, with usage overview (53-week heatmap, token/cost donuts, model table), per-request log, short-interval cache anomaly flags, one-click error copy, quota estimates, and official API pricing refresh.
 - **Compact layout and live stage updates**: Keeps your client font size while tightening line height and block spacing; reports short progress updates during multi-step tool runs and folds them into the top duration header once finished.
 - **Session branching and inline editing**: Fork a new chat from any reply or conversation menu with full history preserved (including chats that used subagents), or edit a sent message in place using Antigravity's native composer.
 - **Multi-account switching (off by default)**: Uses Windows Credential Manager, macOS Keychain, or Linux Secret Service to keep multiple Google accounts isolated without plaintext tokens; check 5-hour/weekly quotas and switch from the sidebar, with optional auto-switch on depletion.
@@ -168,12 +165,17 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Setting | Default | Description |
 | --- | --- | --- |
 | Enable Powertools | On | Master switch; pauses all UI enhancements while keeping saved settings |
-| Language | `简体中文` | Choose `简体中文`, `繁體中文`, or `English` |
+| Language | `简体中文` | Choose one of nine interface languages |
+| Local font and weight | Client defaults | Search by localized or family name and select to apply. Weight can be set independently. Reset restores both defaults. The built-in terminal uses its client font |
 | Compact layout | On | Tightens line height (`1.4`), block spacing, and tool rows while keeping client font size |
 | Tint user message bubbles | Off | Adds a tint and border to user messages (Accent, 5 presets, custom color, and 10%-100% blend slider) |
 | Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats |
 | Keep Overview open when switching chats | On | Preserves the right Overview panel open state across conversations |
 | Conversations per project | `Default (6)` | Controls visible chats per project in the sidebar (`Default (6)`, `1-10`, or `Show all`) |
+| Drop folders onto the sidebar | On | Create or open projects by dropping local folders onto the sidebar in a local window |
+| Pin dropped projects | Off | Pin projects created or opened by dropping folders |
+| Sidebar running border beam | Off | Draws an SVG comet that follows the rounded perimeter of running sidebar chats (follows composer palette by default or picks its own, optional hide native four-dot spinner and Live preview; amber alert on waiting) |
+| Sidebar running conversations group | Off | Pins a collapsible Running section at the top of the sidebar showing all active chats, projects, active subagents, and waiting-for-confirmation alerts; hides when idle |
 | Taskbar unread badge | On | Shows `(N)` unread count in the window and taskbar title when background chats finish |
 
 ### Telemetry & progress
@@ -191,6 +193,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Working composer border beam | Off | Animates a smooth border beam around the composer while working (zero idle cost), transitions cleanly with the quota halo, with 6 palettes and Live preview |
 | Subagent context & telemetry | On | Shows per-subagent model, context usage, tokens, cache hit rate, speed, and cost |
 | Turn duration / Expand tools | On | Shows total duration on finished turns and expands tool details on click |
+| Turn footer telemetry | Off | Displays per-turn model, cache hit rate, input/output tokens and estimated cost in finished reply footers with full breakdown on hover |
 
 ### Enhancements, Accounts, Proxy & Experimental Context
 
@@ -210,6 +213,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Name / Path | Description |
 | --- | --- |
 | `ANTIGRAVITY_USER_DATA_DIR` | Custom Antigravity user-data directory for isolated profiles |
+| `ANTIGRAVITY_CLI_DATA_DIR` | Custom `agy` CLI data directory (defaults to `~/.gemini/antigravity-cli`) |
 | `ANTIGRAVITY_CDP_PORT_FILE` | Explicit path to `DevToolsActivePort` (also honors `AGY_BROWSER_ACTIVE_PORT_FILE`) |
 | `~/.gemini/config/plugins/agy-powertools/` | Installed plugin files and runtime scripts |
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | Saved settings, account metadata, quota samples, and pricing cache |
@@ -219,6 +223,45 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.16.7
+- **Nine-language native localization (incorporating French PR #80, thanks `@oxibys`)**:
+  - Adds French (`Français`), Japanese (`日本語`), Korean (`한국어`), German (`Deutsch`), Spanish (`Español`), and Russian (`Русский`) alongside Simplified Chinese, Traditional Chinese, and English across Powertools panels, Antigravity native UI, Swarm iframes, sidecar aux pane, date-range calendar, and launcher prompts.
+  - Uses modular on-demand locale packs (`lib/locales/`): only the active language pack is injected at boot and language changes fetch via `i18n.pack` RPC on demand, with OS locale auto-detection, per-language `custom-i18n.json` overrides, and full localized READMEs across all nine languages.
+- **Complete sidebar Display Options menu localization (#79)**: Translates `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations`, and menu-scoped `Project` without altering actual project names or code blocks.
+- **Fix lingering Windows Terminal window and linked client exit after Windows 11 relaunch (#61 follow-up, thanks `@poneisme`)**: Launches `Antigravity.exe` through a windowless CUI `-LaunchOnly` self-hop (`CreateNoWindow = $true`) invoking `Start-Process` (`ShellExecuteEx`, `bInheritHandles = FALSE`, with `<NUL >NUL 2>&1` cmd fallback), completely severing Windows Terminal ConPTY handle inheritance and `AttachConsole` attachment while remaining free of `-EncodedCommand`, DCOM, VBS, and `conhost --headless`.
+
+### v2.16.6
+- **Fix unclickable sidebar conversation rows when running beam is enabled**: Removed the child `position: relative` override that collapsed Antigravity's `position: absolute; inset: 0` row link, restoring full row and hover-button clickability.
+- **Polish sidebar bottom beam layering and edge fade**: Raised the `pointer-events: none` beam layer above the hover action bar (`z-index: 20`) to eliminate hard rectangular clipping behind hover icons, and added left/right edge fade masks (`.agy-sb-fade`) for smooth entry and exit.
+
+### v2.16.5
+- **Fix weekly quota and usage statistics accuracy (#63)**:
+  - `lib/quota.mjs`: Prevents zeroed or regressed scans from overwriting valid checkpoints and preserves measured progress across local history regressions.
+  - `lib/dashboard.mjs`: Matches each request against its own quota pool's weekly window bounds (Gemini / Claude / Argon) instead of sharing one earliest start timestamp across pools.
+  - `lib/analytics.mjs`: Persists an atomic per-profile usage archive (90-day retention, up to 20,000 requests) so weekly totals do not drop when old `.db` files are pruned.
+- **UI cleanup and Settings translations**:
+  - Removed redundant hover tooltips on the composer context ring, subagent ring, and speed stats triggers (preserving `aria-label`) so tooltips do not overlap open popovers.
+  - Streamlined the Overview Cost card and Model statistics Cost header: removed verbose hover tooltips, the pricing-basis subtitle, and the dotted header underline, keeping only total cost and average cost per request.
+  - Added 5 missing Antigravity 2.35.2 Settings translations (`Search shortcuts...`, `Settings for conversations outside of projects`, `Hide breakdown`, `Notification settings`, `Automatic check for updates`) with Traditional Chinese support and placeholder restoration.
+- **Community PRs & refinements**:
+  - **Local font family and weight selector (PR #78, thanks `@awei84`)**: Single-row native selectors for font family and weight, extracting localized Chinese font names via OpenType `name` tables and built-in aliases with bilingual search; displays only weights available for the selected family (disabled when unavailable), excluding icon fonts and xterm terminals.
+  - **Sidebar running bottom beam and pinned Running group (PR #76, thanks `@whitzard0421`)**: Both opt-in (off by default); pure CSS bottom-edge left-to-right soft glow and 1px illuminated edge (zero WebGL, honors `prefers-reduced-motion`) with native sidebar typography for the Running group.
+  - **Drag folders onto sidebar to create projects (PR #73, thanks `@niuanhua-ydy`)**: Drops local folders onto the sidebar to create projects with directory/symlink validation and SSH remote window isolation.
+  - **Per-turn footer telemetry (PR #65, thanks `@wwwsideexiecom-boop`)**: Opt-in (off by default); displays model, cache hit rate, input/output tokens, and estimated per-turn cost inline and in hover details.
+
+### v2.16.4
+- **Fix Windows relaunch console session inheritance (#61)**: Launches `Antigravity.exe` via `ProcessStartInfo` (`UseShellExecute = $false`, `CreateNoWindow = $true`) inside the relaunch script so the new instance does not inherit the PowerShell console session.
+- **Fix oversized macOS OAuth credential writes without leaking secrets into argv (#75)**: When `/usr/bin/security -i` hex commands approach the 4096-byte line buffer limit, writes through `/usr/bin/osascript -l JavaScript` over `stdin` using `Security.framework` (`SecItemUpdate` / `SecItemAdd` with `/usr/bin/security` ACL), keeping credentials out of `argv` for all payload sizes.
+- **Reduce long-conversation polling parse and transfer overhead (#62)**: Caches parsed session snapshots in the sidecar by file stamps (including `task.md`), full execution state, pricing rates, and settings; returns `{ unchanged: true, stateRev }` when `knownRev` matches, while advancing running phase timers locally in the renderer from `phaseStartedAtMs`.
+- **Fix macOS cold-start auto-relaunch cooldown and concurrent race (#64)**: Clears relaunch cooldown timestamps once debug port or proxy is ready, adds startup proxy retries, and coordinates cold-start proxy probing with missing-debug-port checks so concurrent paths schedule at most one relaunch.
+- **Fix inline edit shortcuts and draft recovery (#70)**: Respects host `sendWithModEnter` preference (allowing plain Enter newlines when mod-enter send is active while supporting `Cmd/Ctrl+Enter` submit), clarifies the edit banner, and restores the pre-edit draft and attachments if another window starts the conversation.
+- **Prevent fallback outline flash on conversation switch (#74)**: Adds a 220 ms grace window for native `conversation-navigator` to mount before rendering `.pt-outline`.
+- **Add custom localization overrides, 2.35 slash-command translations, and OS locale defaults (#68, #69)**: Loads additive overrides from `plugin_data/agy-powertools/custom-i18n.json`, translates 10 new 2.35 slash commands, initializes default language from the OS locale (BCP-47 and POSIX underscore locales), and resets settings via backend `settings.reset`.
+- **Community PRs**:
+  - **SSH remote early-boot recovery (PR #67, closes #66, thanks `@qimengdunjia`)**: Tolerates unavailable `service()` during early SSH boot and re-applies options when settings update.
+  - **Antigravity CLI telemetry merge and Argon quota pool (PR #71, thanks `@zhangyu-ch`)**: Merges `~/.gemini/antigravity-cli/conversations/*.db` into usage analytics, self-heals pre-upgrade quota checkpoints, and separates the `argon` quota pool.
+  - **Sticky management page header and filter bar (PR #72, thanks `@niuanhua-ydy`)**: Adds sticky positioning and scroll dividers for the Powertools management header and filter bars.
 
 ### v2.16.3
 - **Fix Windows non-TUN proxy relaunch antivirus blocks (#53)**: Removed `-EncodedCommand`, `ShellWindows` DCOM, `CreateProcessW`, and `.vbs`; creates a temporary `.lnk` inside plugin data via a plain `-File` script and launches it via `explorer.exe` (cleaning up `.lnk`, `.ack`, and `.ps1` afterward), avoiding Windows Defender AMSI and Huorong blocks; verifies `--proxy-server=` on the relaunched process when proxy mode is enabled.

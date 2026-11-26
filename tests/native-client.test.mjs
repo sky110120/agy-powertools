@@ -695,6 +695,197 @@ test('stable sendUserCascadeMessage wrapper preserves edit revert even when comp
   ]);
 });
 
+test('createProjectsFromDroppedEntries creates git and plain folder projects, deduplicates/unarchives existing, skips files, and navigates', async () => {
+  const sidebarDropCode = readFileSync(new URL('../lib/native-sidebar-drop.mjs', import.meta.url), 'utf8')
+    .replaceAll('export function', 'function');
+  const clientCode = readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8');
+
+  const existingProjects = [
+    {
+      project: {
+        id: 'existing-active',
+        name: 'app',
+        archived: false,
+        backendType: 1,
+        projectResources: { resources: [{ type: { case: 'folderUri', value: 'file:///fixtures/team/existing-app' } }] }
+      }
+    },
+    {
+      project: {
+        id: 'existing-archived',
+        name: 'old-app',
+        archived: true,
+        backendType: 1,
+        projectResources: { resources: [{ type: { case: 'gitFolder', value: { folderUri: 'file:///fixtures/team/old-app/' } } }] }
+      }
+    }
+  ];
+  const createdCalls = [];
+  const updatedCalls = [];
+  const placeholderCalls = [];
+  const storedItems = [];
+  const navigations = [];
+
+  const pms = {
+    projectsStateProvider: { getState: () => existingProjects },
+    resolveFolder: async uri => uri.includes('git-repo') ? { type: 1, uri } : { type: 0, uri },
+    getRepoInfos: async () => [{ branches: [{ name: 'dev' }, { name: 'main' }] }],
+    createProject: async project => { createdCalls.push(project); },
+    updateProject: async project => { updatedCalls.push(project); },
+    addPlaceholderProject: project => { placeholderCalls.push(project); }
+  };
+  const service = {
+    forkConversation() {},
+    statUri: async ({ uri }) => ({ fileType: uri.endsWith('/plain-file.txt') ? 1 : 2 })
+  };
+  const router = {
+    navigate: async opts => {
+      navigations.push({ to: opts.to, search: opts.search({ cascadeId: 'c1', tab: 'overview', q: 'x' }) });
+    },
+    buildRouteTree() {}
+  };
+  let pinnedStoreValue = '["already-pinned"]';
+  const mockStorageService = {
+    get: k => (k === 'pinnedProjectIds' ? pinnedStoreValue : undefined),
+    store: (k, v) => {
+      storedItems.push([k, v]);
+      if (k === 'pinnedProjectIds') pinnedStoreValue = v;
+    }
+  };
+  const anchor = {
+    '__reactFiber$drop': {
+      tag: 10,
+      type: {},
+      memoizedProps: { value: { core: { projectManagementService: pms, storageService: mockStorageService } } },
+      return: {
+        tag: 10,
+        type: {},
+        memoizedProps: { value: service },
+        return: { tag: 10, type: {}, memoizedProps: { value: router }, return: null }
+      }
+    }
+  };
+  const ctx = vm.createContext({
+    URL,
+    document: { querySelector: () => anchor },
+    crypto: { randomUUID: (() => { let n = 0; return () => `uuid-${++n}`; })() },
+    createProjectMsg: (name, id, resources, isWorkspaceOnly) => ({ id, name, projectResources: { resources }, isWorkspaceOnly, bound: true })
+  });
+  vm.runInContext(`${sidebarDropCode}\n${clientCode}`, ctx);
+
+  const res = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/plain-file.txt', name: 'plain-file.txt', entryIsDir: false, entryIsFile: true },
+    { path: '/fixtures/team/also-file', name: 'also-file', entryIsDir: null, entryIsFile: null },
+    { path: '/fixtures/team/work/git-repo', name: 'git-repo', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/work/app', name: 'app', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/old-app', name: 'old-app', entryIsDir: true, entryIsFile: false }
+  ]);
+
+  assert.equal(res.skippedFiles, 1);
+  assert.equal(res.created.length, 3);
+  assert.equal(res.pinned, false);
+  assert.equal(res.target?.id, 'uuid-3');
+  assert.equal(createdCalls[0].name, 'also-file');
+  assert.equal(createdCalls[0].bound, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(createdCalls[0].projectResources.resources[0])), {
+    type: { case: 'folderUri', value: 'file:///fixtures/team/also-file' }
+  });
+  assert.equal(createdCalls[1].name, 'git-repo');
+  assert.deepEqual(JSON.parse(JSON.stringify(createdCalls[1].projectResources.resources[0])), {
+    type: { case: 'gitFolder', value: { folderUri: 'file:///fixtures/team/work/git-repo', defaultBranch: 'main' } }
+  });
+  // 'app' collides with existing project named 'app' -> disambiguated to 'work/app'
+  assert.equal(createdCalls[2].name, 'work/app');
+  assert.equal(placeholderCalls.length, 3);
+  assert.equal(storedItems.length, 3);
+  assert.equal(storedItems.some(([k]) => k === 'pinnedProjectIds'), false);
+
+  // Archived existing match was unarchived via updateProject
+  assert.equal(res.existing.length, 1);
+  assert.equal(res.existing[0].id, 'existing-archived');
+  assert.equal(updatedCalls.length, 1);
+  assert.equal(updatedCalls[0].archived, false);
+
+  // Navigated to last newly created project ('uuid-3') clearing cascadeId/tab/q
+  assert.deepEqual(JSON.parse(JSON.stringify(navigations)), [
+    { to: '/', search: { project: 'uuid-3' } }
+  ]);
+
+  // Dropping with { pin: true } prepends newly created/unpinned project IDs to pinnedProjectIds without duplicating
+  createdCalls.length = 0;
+  storedItems.length = 0;
+  navigations.length = 0;
+  const pinnedRes = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/pinned-new', name: 'pinned-new', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/existing-app', name: 'existing-app', entryIsDir: true, entryIsFile: false }
+  ], { pin: true });
+  assert.equal(pinnedRes.pinned, true);
+  assert.equal(pinnedRes.target?.id, 'uuid-4');
+  assert.deepEqual(
+    JSON.parse(pinnedStoreValue),
+    ['uuid-4', 'existing-active', 'already-pinned']
+  );
+
+  // Re-dropping with { pin: true } for an already-pinned project preserves order and avoids redundant store write
+  const pinStoreCountBefore = storedItems.filter(([k]) => k === 'pinnedProjectIds').length;
+  existingProjects.push({
+    project: {
+      id: 'already-pinned',
+      name: 'already-pinned',
+      archived: false,
+      backendType: 1,
+      projectResources: { resources: [{ type: { case: 'folderUri', value: 'file:///fixtures/team/already-pinned' } }] }
+    }
+  });
+  const alreadyPinnedRes = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/already-pinned', name: 'already-pinned', entryIsDir: true, entryIsFile: false }
+  ], { pin: true });
+  assert.equal(alreadyPinnedRes.pinned, true);
+  assert.equal(storedItems.filter(([k]) => k === 'pinnedProjectIds').length, pinStoreCountBefore);
+
+  // Dropping only an existing project with pin disabled opens it directly without calling createProject
+  createdCalls.length = 0;
+  navigations.length = 0;
+  const existingOnlyRes = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/existing-app', name: 'existing-app', entryIsDir: true, entryIsFile: false }
+  ]);
+  assert.equal(createdCalls.length, 0);
+  assert.equal(existingOnlyRes.created.length, 0);
+  assert.equal(existingOnlyRes.existing.length, 1);
+  assert.equal(existingOnlyRes.existing[0].id, 'existing-active');
+  assert.deepEqual(JSON.parse(JSON.stringify(navigations)), [
+    { to: '/', search: { project: 'existing-active' } }
+  ]);
+
+  // Also verify statUri fileType=1 skips non-folder without entryIsFile, and plain-object fallback works when createProjectMsg is absent
+  const ctxFallback = vm.createContext({
+    URL,
+    document: { querySelector: () => anchor },
+    crypto: { randomUUID: () => 'uuid-fallback' }
+  });
+  vm.runInContext(`${sidebarDropCode}\n${clientCode}`, ctxFallback);
+  createdCalls.length = 0;
+  const fallbackRes = await ctxFallback.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/plain-file.txt', name: 'plain-file.txt', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/new-plain', name: 'new-plain', entryIsDir: null, entryIsFile: null }
+  ]);
+  assert.equal(fallbackRes.skippedFiles, 1);
+  assert.equal(fallbackRes.created.length, 1);
+  assert.equal(createdCalls[0].id, 'uuid-fallback');
+  assert.equal(createdCalls[0].bound, undefined);
+  service.statUri = async () => ({ fileType: 3 });
+  pms.resolveFolderOrThrow = async uri => { if (!uri.endsWith('/linked-dir')) throw Error('Not a directory'); };
+  const linked = await ctxFallback.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/linked-file', entryIsDir: true }, { path: '/fixtures/linked-dir' }
+  ]);
+  assert.equal(linked.skippedFiles, 1);
+  assert.deepEqual(Array.from(linked.created, item => item.name), ['linked-dir']);
+  createdCalls.length = 0;
+  ctxFallback.sshRemote = { kind: 'ssh' };
+  await assert.rejects(ctxFallback.__agyNativeAdapter.createProjectsFromDroppedEntries([{ path: '/fixtures/local' }]), /local window/);
+  assert.equal(createdCalls.length, 0);
+});
+
 test('inline edit capture-phase Enter and Send click revert and resend directly even when sendUserCascadeMessage was never hooked, and authService exposes loginSession helpers (Issues #58 & #56)', async () => {
   const events = [];
   const hostListeners = new Map();
@@ -852,4 +1043,164 @@ test('inline edit capture-phase Enter and Send click revert and resend directly 
     ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
     ['sendMessage', 'conv-initial-58', 'second click edit', 'edit']
   ]);
+
+  // Verify Issue #70: Cmd+Enter (macOS) and Ctrl+Enter also submit inline edit cleanly
+  events.length = 0;
+  editorText = 'cmd enter edit';
+  await adapter.beginEdit(element);
+  const onCmdKeyDown = hostListeners.get('keydown:true');
+  onCmdKeyDown({
+    key: 'Enter',
+    metaKey: true,
+    target: { closest: sel => sel === '[contenteditable="true"]' ? {} : null },
+    preventDefault() {},
+    stopPropagation() {},
+    stopImmediatePropagation() {}
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(adapter.pendingEdit, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['cancel', 'conv-initial-58'],
+    ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
+    ['sendMessage', 'conv-initial-58', 'cmd enter edit', 'edit']
+  ]);
+
+  // Verify Issue #70: when host configures sendWithModEnter: true, plain Enter is NOT intercepted (allows newline),
+  // while Ctrl+Enter / Cmd+Enter submits; and cancelEdit({ restoreDraft: true }) restores original draft & media.
+  events.length = 0;
+  editorText = 'unsent original draft';
+  let currentMedia = [{ name: 'orig.png' }];
+  box.getMediaAttachments = () => currentMedia;
+  box.setMediaAttachments = next => { currentMedia = [...next]; };
+  const originalSnap = { toJSON: () => ({ root: { type: 'root', children: [{ text: 'unsent original draft' }] } }) };
+  let restoredEditorState = null;
+  editor.getEditorState = () => ({ toJSON: () => ({ root: { type: 'root', children: [{ text: editorText }] } }) });
+  editor.setEditorState = next => { restoredEditorState = next; };
+  await adapter.beginEdit(element);
+  assert.ok(adapter.pendingEdit);
+  const modKeyDown = hostListeners.get('keydown:true');
+  const modEditorTarget = {
+    '__reactFiber$ed': { memoizedProps: { sendWithModEnter: true }, return: null },
+    closest: sel => sel === '[contenteditable="true"]' ? {} : null
+  };
+  let plainPrevented = false;
+  modKeyDown({
+    key: 'Enter',
+    target: modEditorTarget,
+    preventDefault() { plainPrevented = true; },
+    stopPropagation() { plainPrevented = true; },
+    stopImmediatePropagation() { plainPrevented = true; }
+  });
+  assert.equal(plainPrevented, false, 'plain Enter must pass through for newline when sendWithModEnter is true');
+  assert.ok(adapter.pendingEdit, 'inline edit must stay active after plain Enter in mod-enter mode');
+
+  // External run auto-cancel restores original draft & attachments
+  currentMedia = [{ name: 'edited-msg.png' }];
+  adapter.cancelEdit({ restoreDraft: true });
+  assert.equal(adapter.pendingEdit, null);
+  assert.equal(inputBox.parentNode, bottomDock);
+  assert.deepEqual(currentMedia, [{ name: 'orig.png' }]);
+  assert.ok(restoredEditorState, 'cancelEdit({ restoreDraft: true }) must restore pre-edit editor state');
+
+  // Re-open in mod-enter mode and confirm Ctrl+Enter submits
+  editorText = 'ctrl enter in mod mode';
+  await adapter.beginEdit(element);
+  const modKeyDown2 = hostListeners.get('keydown:true');
+  let ctrlPrevented = false;
+  modKeyDown2({
+    key: 'Enter',
+    ctrlKey: true,
+    target: modEditorTarget,
+    preventDefault() { ctrlPrevented = true; },
+    stopPropagation() {},
+    stopImmediatePropagation() {}
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(ctrlPrevented, true);
+  assert.equal(adapter.pendingEdit, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['cancel', 'conv-initial-58'],
+    ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
+    ['sendMessage', 'conv-initial-58', 'ctrl enter in mod mode', 'edit']
+  ]);
+  void originalSnap;
+});
+
+test('runtime option setters survive early boot before conversation service mounts and hook send once available (Issue #66)', async () => {
+  let mountedElement = null;
+  const sentPayloads = [];
+  const service = {
+    forkConversation() {},
+    async sendUserCascadeMessage(payload) { sentPayloads.push(payload); return payload; }
+  };
+  const serviceElement = {
+    '__reactFiber$boot': { tag: 10, type: {}, memoizedProps: { value: service }, return: null }
+  };
+  const baseConfig = { plannerConfig: { noToolExplanation: true }, checkpointConfig: { enabled: true } };
+  const resolve = () => baseConfig;
+  const modelText = { type: 'step', step: { step: { case: 'plannerResponse', value: { response: 'Checking files.' } } } };
+  const render = arg => ({ leadingSteps: arg.leadingSteps || [], tailSteps: [], body: { type: 'collapsible', isActive: arg.running, content: { groups: arg.groups } } });
+  const nativeFlat = args => {
+    const out = [];
+    for (const g of args.groups) {
+      out.push({ type: 'header', id: `header-${g.id}`, label: g.label });
+      for (const it of g.items) out.push({ type: 'row', id: it.cascadeId, cascadeId: it.cascadeId, isIndented: true, groupId: g.id });
+    }
+    return out;
+  };
+  const context = vm.createContext({
+    document: { querySelector: () => mountedElement },
+    __agyNativeBindings: { names: { resolve: 'sjc', segment: 'Yyc', menu: 'lHc', sidebarItems: 'VWc' } },
+    sjc: resolve,
+    Yyc: render,
+    VWc: nativeFlat,
+    I: { CascadeConfigSchema: {}, CheckpointConfigSchema: {}, CascadePlannerConfigSchema: {}, PromptSectionCustomizationConfigSchema: {}, PromptSectionSchema: {} },
+    tc: (_, value) => structuredClone(value),
+    Wb: (_, value) => value
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  // Simulate early SSH window boot: conversation service provider is not mounted yet.
+  adapter.setEnabled(true);
+  adapter.setStageUpdates(true);
+  adapter.setEfficientIO(true);
+  adapter.setContextLimit(500000);
+  adapter.setSidebarProjectLimit(2);
+
+  assert.equal(adapter.stageUpdates, true);
+  const resolved = context.sjc({});
+  assert.equal(resolved.plannerConfig.noToolExplanation, false);
+  assert.equal(resolved.checkpointConfig.maxTokenLimit, 500000);
+  assert.deepEqual(
+    Array.from(resolved.plannerConfig.promptSectionCustomizationConfig.appendPromptSections, p => p.title),
+    ['powertools_stage_updates', 'powertools_efficient_io']
+  );
+  const folded = context.Yyc({ groups: [], leadingSteps: [modelText], running: false });
+  assert.equal(folded.leadingSteps.length, 0);
+  assert.equal(folded.body.content.groups.length, 1);
+
+  const sidebarItems = context.VWc({
+    groups: [{ id: 'p1', label: 'Proj', items: [{ cascadeId: 'c1' }, { cascadeId: 'c2' }, { cascadeId: 'c3' }] }],
+    groupBy: 'project',
+    onlyShowFirstFewConvos: {}
+  });
+  assert.equal(sidebarItems.filter(x => x.type === 'row').length, 2);
+  assert.equal(sidebarItems.at(-1).label, 'See all (3)');
+
+  // Once the conversation service mounts, ensureRequestHook attaches sendUserCascadeMessage with the already-saved options.
+  mountedElement = serviceElement;
+  adapter.ensureRequestHook();
+  await service.sendUserCascadeMessage({ cascadeId: 'conv-ssh', cascadeConfig: {} });
+  assert.equal(sentPayloads.length, 1);
+  assert.equal(sentPayloads[0].cascadeConfig.plannerConfig.noToolExplanation, false);
+  assert.equal(sentPayloads[0].cascadeConfig.checkpointConfig.maxTokenLimit, 500000);
+  assert.deepEqual(
+    Array.from(sentPayloads[0].cascadeConfig.plannerConfig.promptSectionCustomizationConfig.appendPromptSections, p => p.title),
+    ['powertools_stage_updates', 'powertools_efficient_io']
+  );
+
+  adapter.dispose();
 });

@@ -3,13 +3,27 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createSettingsStore, DEFAULT_SETTINGS } from '../lib/settings.mjs';
+import { createSettingsStore, DEFAULT_SETTINGS, detectSystemLanguage } from '../lib/settings.mjs';
 
 test('settings persist, merge safely, and reject unknown options without changing saved data', () => {
   const directory = mkdtempSync(join(tmpdir(), 'agy-settings-'));
   try {
     const store = createSettingsStore(directory);
     assert.deepEqual(store.get(), DEFAULT_SETTINGS);
+    store.set({ customFont: '  Maple Mono NF CN  ' });
+    assert.equal(createSettingsStore(directory).get().customFont, 'Maple Mono NF CN');
+    for (const weight of [300,400,500,600,700,0]) {
+      store.set({customFontWeight:weight});
+      assert.equal(createSettingsStore(directory).get().customFontWeight,weight);
+    }
+    for (const weight of ['400',200,null,true]) assert.throws(()=>store.set({customFontWeight:weight}));
+    const fontBefore = readFileSync(join(directory, 'settings.json'), 'utf8');
+    for (const customFont of [null, true, 123, 'x'.repeat(129), 'Maple\nMono', 'Maple\u0000Mono', ...[';', '{', '}', '\\', '<', '>', '\u0085'].map(c => 'Font' + c)]) {
+      assert.throws(() => store.set({ customFont }), /设置/);
+      assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), fontBefore);
+    }
+    store.set({ customFont: '' });
+    assert.equal(store.get().customFont, '');
     store.set({ compact: false, timing: false });
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().userBubbleTint, false);
@@ -51,6 +65,14 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ sshCommandPaste: false });
     assert.equal(store.get().sshCommandPaste, false);
     store.set({ sshCommandPaste: true });
+    assert.equal(store.get().sidebarFolderDrop, true);
+    store.set({ sidebarFolderDrop: false });
+    assert.equal(store.get().sidebarFolderDrop, false);
+    store.set({ sidebarFolderDrop: true });
+    assert.equal(store.get().sidebarFolderDropPin, false);
+    store.set({ sidebarFolderDropPin: true });
+    assert.equal(store.get().sidebarFolderDropPin, true);
+    store.set({ sidebarFolderDropPin: false });
     assert.equal(store.get().sessionSearch, true);
     store.set({ sessionSearch: false });
     assert.equal(store.get().sessionSearch, false);
@@ -58,6 +80,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().subagentTelemetry, true);
     store.set({ subagentTelemetry: false }); assert.equal(store.get().subagentTelemetry, false);
     store.set({ subagentTelemetry: true }); assert.equal(store.get().subagentTelemetry, true);
+    assert.equal(DEFAULT_SETTINGS.turnMeta, false);
+    assert.equal(store.get().turnMeta, false);
+    store.set({ turnMeta: false }); assert.equal(store.get().turnMeta, false);
+    store.set({ turnMeta: true }); assert.equal(store.get().turnMeta, true);
     assert.equal(store.get().multiAccount, false);
     assert.equal(store.get().accountSwitcher, true);
     assert.equal(store.get().accountViewMode, 'list');
@@ -84,6 +110,16 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);
     store.set({ sidebarProjectLimit: -1 }); assert.equal(store.get().sidebarProjectLimit, -1);
     store.set({ sidebarProjectLimit: 0 });
+    assert.equal(store.get().sidebarRunningBeam, false);
+    assert.equal(store.get().sidebarRunningBeamPalette, 'sync');
+    assert.equal(store.get().sidebarHideNativeSpinner, true);
+    assert.equal(store.get().sidebarRunningGroup, false);
+    store.set({ sidebarRunningBeam: true, sidebarRunningBeamPalette: 'neon', sidebarHideNativeSpinner: false, sidebarRunningGroup: true });
+    assert.equal(store.get().sidebarRunningBeam, true);
+    assert.equal(store.get().sidebarRunningBeamPalette, 'neon');
+    assert.equal(store.get().sidebarHideNativeSpinner, false);
+    assert.equal(store.get().sidebarRunningGroup, true);
+    store.set({ sidebarRunningBeam: false, sidebarRunningBeamPalette: 'sync', sidebarHideNativeSpinner: true, sidebarRunningGroup: false });
     assert.equal(DEFAULT_SETTINGS.overviewRange, 'weeklyQuota');
     assert.equal(store.get().overviewRange, 'weeklyQuota');
     store.set({ overviewRange: '24h' }); assert.equal(store.get().overviewRange, '24h');
@@ -99,8 +135,41 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { composerQuotaHaloWindow: '1d' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
+    store.set({ compact: false, language: DEFAULT_SETTINGS.language === 'en' ? 'zh-CN' : 'en' });
+    assert.deepEqual(store.reset(), DEFAULT_SETTINGS);
+    assert.deepEqual(store.get(), DEFAULT_SETTINGS);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('detectSystemLanguage selects zh-CN, zh-TW, or en across BCP-47 and POSIX underscore locales (Issue #69)', () => {
+  assert.equal(detectSystemLanguage({ locale: 'zh-CN', env: {} }), 'zh-CN');
+  assert.equal(detectSystemLanguage({ locale: 'zh-Hans-SG', env: {} }), 'zh-CN');
+  assert.equal(detectSystemLanguage({ locale: 'zh-TW', env: {} }), 'zh-TW');
+  assert.equal(detectSystemLanguage({ locale: 'zh-Hant-HK', env: {} }), 'zh-TW');
+  assert.equal(detectSystemLanguage({ locale: 'en-US', env: {} }), 'en');
+  assert.equal(detectSystemLanguage({ locale: 'tr-TR', env: {} }), 'en');
+  assert.equal(detectSystemLanguage({ locale: '', env: { LANG: 'en_GB.UTF-8' } }), 'en');
+  assert.equal(detectSystemLanguage({ locale: '', env: { LC_ALL: 'zh_TW.UTF-8' } }), 'zh-TW');
+  assert.equal(detectSystemLanguage({ locale: '', env: { LANG: 'zh_CN.UTF-8' } }), 'zh-CN');
+  assert.equal(detectSystemLanguage({ locale: '', env: { LANG: 'zh_SG.UTF-8' } }), 'zh-CN');
+  assert.equal(detectSystemLanguage({ locale: '', env: { LC_ALL: 'zh_HK.UTF-8' } }), 'zh-TW');
+  assert.equal(detectSystemLanguage({ locale: '', env: { LC_ALL: 'zh_MO.UTF-8' } }), 'zh-TW');
+  assert.equal(detectSystemLanguage({ locale: 'C.UTF-8', env: { LANG: 'zh_CN.UTF-8' } }), 'zh-CN');
+});
+
+test('all nine locale tags and POSIX locale names persist across settings stores', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-locales-'));
+  try {
+    const store = createSettingsStore(dir);
+    for (const [tag, language] of Object.entries({'zh-CN':'zh-CN','zh-TW':'zh-TW','en-GB':'en','fr-FR':'fr','ja-JP':'ja','ko-KR':'ko','de-DE':'de','es-ES':'es','ru-RU':'ru'})) {
+      assert.equal(detectSystemLanguage({locale:tag}), language);
+      assert.equal(detectSystemLanguage({env:{LC_MESSAGES:tag.replace('-', '_')+'.UTF-8'}}), language);
+      store.set({language});
+      assert.equal(createSettingsStore(dir).get().language, language);
+    }
+    assert.equal(detectSystemLanguage({locale:'it_IT.UTF-8'}), 'en');
+  } finally { rmSync(dir, {recursive:true, force:true}); }
 });

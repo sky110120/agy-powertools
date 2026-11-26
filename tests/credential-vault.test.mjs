@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import {
   ACTIVE_TARGET,
   ACTIVE_USERNAME,
+  buildMacKeychainReadScript,
+  buildMacKeychainWriteScript,
   createCredentialVault,
   extractCredentialEmail,
   vaultTargetFor
@@ -223,3 +226,253 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
   const line = String(res.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
   assert.equal(line, 'alpha@example.com|real@example.com|beta@example.com|');
 });
+
+test('macOS credential vault keeps secrets out of argv across small, medium (2.6KB), and >4KB OAuth payloads and round-trips cleanly (Issue #75)', () => {
+  const smallSecret = JSON.stringify({
+    id_token_email: 'small@example.com',
+    token: { access_token: 'S'.repeat(64) }
+  });
+  const mediumSecret = JSON.stringify({
+    id_token_email: 'mid@example.com',
+    token: { access_token: 'M'.repeat(1400), refresh_token: 'N'.repeat(1100) }
+  });
+  const bigSecret = JSON.stringify({
+    id_token_email: 'big@example.com',
+    token: { access_token: 'A'.repeat(2400), refresh_token: 'R'.repeat(2200) }
+  });
+  assert.ok(Buffer.byteLength(mediumSecret, 'utf8') > 2200 && Buffer.byteLength(mediumSecret, 'utf8') < 3600);
+  assert.ok(Buffer.byteLength(bigSecret, 'utf8') > 4096, 'test payload must exceed 4 KB raw');
+
+  const store = new Map();
+  const calls = [];
+  const vault = createCredentialVault({
+    platform: 'darwin',
+    runSpawn(cmd, args, opts) {
+      calls.push({ cmd, args, input: opts?.input, env: opts?.env });
+      if (cmd === '/usr/bin/security' && args[0] === 'find-generic-password') {
+        const svc = args[args.indexOf('-s') + 1];
+        const acct = args[args.indexOf('-a') + 1];
+        const val = store.get(`${svc}\0${acct}`);
+        if (val == null) return { status: 44, stdout: '', stderr: 'not found' };
+        return { status: 0, stdout: Buffer.from(val + '\n', 'utf8') };
+      }
+      if (cmd === '/usr/bin/security' && args[0] === '-i') {
+        const line = String(opts?.input || '');
+        const hexM = line.match(/^add-generic-password -U -s ("[^"]+") -a ("[^"]+") -X ([0-9a-f]+)\n$/i);
+        if (hexM) {
+          store.set(`${JSON.parse(hexM[1])}\0${JSON.parse(hexM[2])}`, Buffer.from(hexM[3], 'hex').toString('utf8'));
+          return { status: 0, stdout: '' };
+        }
+        const rawM = line.match(/^add-generic-password -U -s ("[^"]+") -a ("[^"]+") -w '([^']*)'\n$/);
+        assert.ok(rawM, 'security -i input must be well-formed -X or -w command');
+        store.set(`${JSON.parse(rawM[1])}\0${JSON.parse(rawM[2])}`, rawM[3]);
+        return { status: 0, stdout: '' };
+      }
+      if (cmd === '/usr/bin/osascript' && args[0] === '-l' && args[1] === 'JavaScript') {
+        const script = String(opts?.input || '');
+        const svcM = script.match(/const service = \$\(([^\n]+)\);/);
+        const acctM = script.match(/const account = \$\(([^\n]+)\);/);
+        assert.ok(svcM && acctM, 'osascript stdin must carry service and account');
+        const key = `${JSON.parse(svcM[1])}\0${JSON.parse(acctM[1])}`;
+        if (script.includes('SecItemCopyMatching')) {
+          const val = store.get(key);
+          if (val == null) return { status: 1, stdout: '', stderr: 'copy-matching OSStatus -25300' };
+          return { status: 0, stdout: Buffer.from(Buffer.from(val, 'utf8').toString('base64') + '\n', 'utf8') };
+        }
+        const b64M = script.match(/initWithBase64EncodedStringOptions\(\$\(([^\n]+)\), 0\)/);
+        assert.ok(b64M, 'osascript write stdin must carry base64 payload');
+        store.set(key, Buffer.from(JSON.parse(b64M[1]), 'base64').toString('utf8'));
+        return { status: 0, stdout: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected command: ${cmd}` };
+    }
+  });
+
+  // 1. Small payload uses `/usr/bin/security -i` (-X hex) via stdin, never passing secret in argv
+  store.set('gemini\0antigravity', smallSecret);
+  assert.equal(vault.saveActiveTo('acct-small', { expectedEmail: 'small@example.com' }).ok, true);
+  const smallWrite = calls.at(-1);
+  assert.equal(smallWrite.cmd, '/usr/bin/security');
+  assert.deepEqual(smallWrite.args, ['-i']);
+  assert.ok(String(smallWrite.input).includes(' -X '));
+
+  // 2. Medium (~2.6 KB) printable OAuth JSON uses `/usr/bin/security -i` (-w raw) via stdin (keeps native security ACL, zero argv leak)
+  store.set('gemini\0antigravity', mediumSecret);
+  assert.equal(vault.saveActiveTo('acct-mid', { expectedEmail: 'mid@example.com' }).ok, true);
+  const midWrite = calls.at(-1);
+  assert.equal(midWrite.cmd, '/usr/bin/security');
+  assert.deepEqual(midWrite.args, ['-i']);
+  assert.ok(String(midWrite.input).includes(" -w '"));
+  assert.equal(store.get('agy-powertools-account\0acct-mid'), mediumSecret);
+
+  // 3. Oversized (> 4 KB) payload uses `/usr/bin/osascript -l JavaScript` via stdin, never leaking secret/hex/base64 into argv
+  store.set('gemini\0antigravity', bigSecret);
+  const saved = vault.saveActiveTo('acct-big', { expectedEmail: 'big@example.com' });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.bytes, Buffer.byteLength(bigSecret, 'utf8'));
+  const bigWrite = calls.at(-1);
+  assert.equal(bigWrite.cmd, '/usr/bin/osascript');
+  assert.deepEqual(bigWrite.args, ['-l', 'JavaScript']);
+  const joinedArgs = bigWrite.args.join(' ');
+  assert.equal(joinedArgs.includes('big@example.com'), false);
+  assert.equal(joinedArgs.includes('AAAA'), false);
+  assert.equal(joinedArgs.includes(Buffer.from(bigSecret, 'utf8').toString('hex')), false);
+  assert.equal(joinedArgs.includes(Buffer.from(bigSecret, 'utf8').toString('base64')), false);
+
+  // 4. Round-trip restore back to active slot recovers the exact > 4 KB OAuth payload via non-interactive JXA read
+  store.set('gemini\0antigravity', smallSecret);
+  const restored = vault.restoreToActive('acct-big', { expectedEmail: 'big@example.com' });
+  assert.equal(restored.ok, true);
+  assert.equal(store.get('gemini\0antigravity'), bigSecret);
+});
+
+test('large Keychain writes fail closed when the reader, ACL, partition or protected add fails', () => {
+  const script = buildMacKeychainWriteScript({ service: 'test', account: 'test', dataBase64: 'YQ==' });
+  const makeRef = value => ({ [Symbol.toStringTag]: 'Ref', value });
+  for (const failure of ['reader', 'acl', 'partition', 'add']) {
+    const writes = [];
+    const bound = [];
+    const dictionary = {
+      setObjectForKey(v, k) {
+        assert.notEqual(Object.prototype.toString.call(v), '[object Ref]', 'dict value must be cast from Ref to ObjC object');
+        assert.notEqual(Object.prototype.toString.call(k), '[object Ref]', 'dict key must be cast from Ref to ObjC object');
+      },
+      get mutableCopy() { return this; }
+    };
+    const bridge = Object.assign(value => value, {
+      kSecClass: makeRef('class'),
+      kSecClassGenericPassword: makeRef('genp'),
+      kSecAttrService: makeRef('svce'),
+      kSecAttrAccount: makeRef('acct'),
+      kSecValueData: makeRef('v_Data'),
+      kSecAttrAccess: makeRef('accs'),
+      kSecACLAuthorizationPartitionID: makeRef('ACLAuthorizationPartitionID'),
+      NSData: { alloc: { initWithBase64EncodedStringOptions: () => ({ isNil: () => false }) } },
+      NSMutableDictionary: { alloc: { init: dictionary } },
+      NSMutableArray: {
+        alloc: {
+          init: {
+            addObject(obj) {
+              assert.notEqual(Object.prototype.toString.call(obj), '[object Ref]', 'array element must be cast from Ref to ObjC object');
+            }
+          }
+        }
+      },
+      SecItemUpdate: (q, a) => {
+        assert.equal(q, dictionary);
+        assert.equal(a, dictionary);
+        return -25300;
+      },
+      SecTrustedApplicationCreateFromPath(path, ref) {
+        assert.equal(typeof path, 'string');
+        ref[0] = makeRef(path);
+        return path === '/usr/bin/security' && failure === 'reader' ? -1 : 0;
+      },
+      SecAccessCreate(service, list, ref) {
+        assert.equal(service, 'test');
+        assert.ok(list);
+        ref[0] = makeRef('access');
+        return failure === 'acl' ? -1 : 0;
+      },
+      SecAccessCopyMatchingACLList() { return null; },
+      SecACLCreateWithSimpleContents(access, apps, xml, prompt, ref) {
+        assert.equal(access, 'access');
+        assert.equal(apps, null);
+        assert.match(String(xml), /apple-tool:/);
+        assert.equal(prompt, 0);
+        ref[0] = makeRef('acl');
+        return failure === 'partition' ? -1 : 0;
+      },
+      SecACLUpdateAuthorizations(acl) {
+        assert.equal(acl, 'acl');
+        return 0;
+      },
+      SecItemAdd(q) {
+        assert.equal(q, dictionary);
+        writes.push('add');
+        return -1;
+      },
+      exit(code) { throw Error(`exit ${code}`); }
+    });
+    const ObjC = {
+      import() {},
+      bindFunction: (name, sig) => bound.push([name, sig]),
+      castRefToObject: r => r.value,
+      unwrap: o => String(o)
+    };
+    assert.throws(() => runInNewContext(script, { $: bridge, Ref: () => [], ObjC, console: { log() {} } }), /exit 1/);
+    assert.deepEqual(writes, failure === 'add' ? ['add'] : []);
+    assert.ok(bound.some(([name]) => name === 'SecItemAdd'));
+    assert.ok(bound.some(([name]) => name === 'SecAccessCreate'));
+    assert.ok(bound.some(([name]) => name === 'SecACLCreateWithSimpleContents'));
+  }
+});
+
+if (process.platform === 'darwin') {
+  test('live macOS Keychain round-trip verifies 2.6KB security -i -w and >4KB JXA Security.framework create/read/update/read', async t => {
+    const service = `agy-powertools-ci-test-${process.pid}-${Date.now()}`;
+    const midAccount = 'medium-payload';
+    const largeAccount = 'large-payload';
+    const midPayload = JSON.stringify({
+      id_token_email: 'ci-mid@example.com',
+      token: { access_token: 'M'.repeat(1400), refresh_token: 'N'.repeat(1100) }
+    });
+    const largePayload = JSON.stringify({
+      id_token_email: 'ci-large@example.com',
+      token: { access_token: 'A'.repeat(2400), refresh_token: 'R'.repeat(2200) }
+    });
+    assert.ok(Buffer.byteLength(midPayload, 'utf8') > 2200 && Buffer.byteLength(midPayload, 'utf8') < 3600);
+    assert.ok(Buffer.byteLength(largePayload, 'utf8') > 4096);
+    try {
+      // 1. Medium (~2.6 KB) printable OAuth JSON via `/usr/bin/security -i -w '...'` -> read via `/usr/bin/security -w`
+      const midCmd = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(midAccount)} -w '${midPayload}'\n`;
+      const midWrite = spawnSync('/usr/bin/security', ['-i'], {
+        input: midCmd,
+        stdio: ['pipe', 'ignore', 'pipe'],
+        timeout: 10000
+      });
+      if (midWrite.status !== 0 && /-25308|-25293|interaction not allowed/i.test(String(midWrite.stderr || ''))) {
+        t.skip('macOS runner login keychain is locked in headless environment');
+        return;
+      }
+      assert.equal(midWrite.status, 0, String(midWrite.stderr || 'security -i -w failed'));
+      const midRead = spawnSync('/usr/bin/security', ['find-generic-password', '-s', service, '-a', midAccount, '-w'], {
+        encoding: 'utf8',
+        timeout: 10000
+      });
+      assert.equal(midRead.status, 0, String(midRead.stderr || 'security medium read failed'));
+      assert.equal(String(midRead.stdout || '').replace(/[\r\n]+$/, ''), midPayload);
+
+      // 2. Oversized (> 4 KB) payload via JXA Security.framework create -> read -> update -> read (non-interactive)
+      for (const currentPayload of [largePayload, largePayload.replace('ci-large@example.com', 'updated@example.com')]) {
+        const writeScript = buildMacKeychainWriteScript({
+          service,
+          account: largeAccount,
+          dataBase64: Buffer.from(currentPayload, 'utf8').toString('base64')
+        });
+        const writeRes = spawnSync('/usr/bin/osascript', ['-l', 'JavaScript'], {
+          input: writeScript,
+          stdio: ['pipe', 'ignore', 'pipe'],
+          timeout: 10000
+        });
+        if (writeRes.status !== 0 && /-25308|-25293/.test(String(writeRes.stderr || ''))) {
+          t.skip('macOS runner login keychain is locked in headless environment');
+          return;
+        }
+        assert.equal(writeRes.status, 0, String(writeRes.stderr || 'osascript write failed'));
+        const readScript = buildMacKeychainReadScript({ service, account: largeAccount });
+        const readRes = spawnSync('/usr/bin/osascript', ['-l', 'JavaScript'], {
+          input: readScript,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 10000
+        });
+        assert.equal(readRes.status, 0, String(readRes.stderr || 'osascript read failed'));
+        const decoded = Buffer.from(Buffer.from(readRes.stdout || '').toString('utf8').trim(), 'base64').toString('utf8');
+        assert.equal(decoded, currentPayload);
+      }
+    } finally {
+      spawnSync('/usr/bin/security', ['delete-generic-password', '-s', service, '-a', midAccount], { stdio: 'ignore', timeout: 5000 });
+      spawnSync('/usr/bin/security', ['delete-generic-password', '-s', service, '-a', largeAccount], { stdio: 'ignore', timeout: 5000 });
+    }
+  });
+}

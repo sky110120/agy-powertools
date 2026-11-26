@@ -220,6 +220,37 @@ test('createRemoteTelemetryBridge runs in-memory worker over child stdio, tolera
     await bridge.close();
   }
 
+  // Verify remote worker also merges ~/.gemini/antigravity-cli when ANTIGRAVITY_APP_DATA_DIR points to ~/.gemini/antigravity
+  const remoteGeminiAppDir = join(dir, '.gemini', 'antigravity');
+  const remoteGeminiCliDir = join(dir, '.gemini', 'antigravity-cli');
+  seedConversationFixture(remoteGeminiAppDir, 'remote-app-conv', 'Remote desktop prompt');
+  seedConversationFixture(remoteGeminiCliDir, 'remote-cli-conv', 'Remote CLI prompt');
+  const cliBridge = createRemoteTelemetryBridge({
+    userDataDir,
+    connectTimeoutMs: 5000,
+    requestTimeoutMs: 5000,
+    spawnProcess: (_command, _args, opts) => {
+      const child = spawn(process.execPath, ['--no-warnings', '-e', harnessScript], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...opts.env, ANTIGRAVITY_APP_DATA_DIR: remoteGeminiAppDir }
+      });
+      childRefs.push(child);
+      return child;
+    }
+  });
+  try {
+    const [mergedDash, appOnlySearch] = await Promise.all([
+      cliBridge.dashboard('homelab', { force: true }),
+      cliBridge.search('homelab', { query: 'prompt' })
+    ]);
+    assert.equal(mergedDash.totalRequests, 2);
+    assert.deepEqual(new Set(mergedDash.requests.map(r => r.conversationId)), new Set(['remote-app-conv', 'remote-cli-conv']));
+    assert.equal(appOnlySearch.results.length, 1);
+    assert.equal(appOnlySearch.results[0].conversationId, 'remote-app-conv');
+  } finally {
+    await cliBridge.close();
+  }
+
   for (const child of childRefs) {
     assert.ok(child.exitCode !== null || child.signalCode !== null, 'worker child should exit cleanly on close()');
   }
@@ -435,6 +466,178 @@ test('startNativeIntegration routes SSH windows to remoteTelemetry, isolates dis
   } finally {
     await stop?.();
     globalThis.fetch = originalFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('local state cache invalidates on task.md edits, execution.live/subagent title changes, and single-rate pricing edits, and settings.reset restores backend defaults', async () => {
+  const { DEFAULT_SETTINGS } = await import('../lib/settings.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'agy-cache-inv-'));
+  const appDataDir = join(dir, 'app');
+  const dataDir = join(dir, 'data');
+  mkdirSync(dataDir, { recursive: true });
+  const cid = 'conv-cache-62';
+  seedConversationFixture(appDataDir, cid, 'Verify cache invalidation');
+
+  const portFile = join(dir, 'DevToolsActivePort');
+  writeFileSync(portFile, '12346\n/devtools/browser/test\n');
+  const originalFetch = globalThis.fetch;
+  const originalAppData = process.env.ANTIGRAVITY_APP_DATA_DIR;
+  process.env.ANTIGRAVITY_APP_DATA_DIR = appDataDir;
+
+  const target = { id: 'local-cache', type: 'page', title: 'Local - Antigravity', url: 'https://127.0.0.1:5011/c/conv-cache-62', webSocketDebuggerUrl: 'ws://127.0.0.1:12346/devtools/page/local-cache' };
+  globalThis.fetch = async () => ({ ok: true, json: async () => [target] });
+
+  let parseCalls = 0;
+  let capturedClient = null;
+  let stop;
+  try {
+    stop = startNativeIntegration({
+      portFile,
+      dataDir,
+      wsl: false,
+      onStatus() {},
+      parseSessionData: (id, opts) => {
+        parseCalls++;
+        return parseSessionData(id, { ...opts, appDataDir });
+      },
+      discover: async () => ['sampleNativeName'],
+      connect: async () => {
+        const listeners = new Set();
+        const replies = [];
+        const client = {
+          listeners,
+          replies,
+          onEvent(fn) { listeners.add(fn); },
+          emit(event) { return Promise.all([...listeners].map(fn => fn(event))); },
+          socket: { addEventListener() {}, close() {} },
+          async send(method, params = {}) {
+            if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main-frame' } } };
+            if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: 'script-1' };
+            if (method === 'Runtime.evaluate') {
+              const expr = String(params.expression || '');
+              if (expr.includes('navigator.userAgent')) return { result: { value: { ua: 'Antigravity/2.35.2', sshKind: '', sshHost: '', title: target.title } } };
+              if (expr.includes('globalThis.__agyPowertoolsReceive')) {
+                const match = expr.match(/globalThis\.__agyPowertoolsReceive\?\.\((\d+),([\s\S]+)\)$/);
+                if (match) replies.push({ id: Number(match[1]), payload: JSON.parse(match[2]) });
+                return { result: { value: true } };
+              }
+              return { result: { value: false } };
+            }
+            return {};
+          }
+        };
+        capturedClient = client;
+        return client;
+      }
+    });
+
+    await stop.ready;
+    await capturedClient.emit({ method: 'Runtime.executionContextCreated', params: { context: { id: 10, origin: 'https://127.0.0.1:5011', auxData: { isDefault: true, frameId: 'main-frame' } } } });
+    const rpc = async (id, body) => {
+      await capturedClient.emit({
+        method: 'Runtime.bindingCalled',
+        params: { name: '__agyPowertoolsHost', executionContextId: 10, payload: JSON.stringify({ id, ...body }) }
+      });
+      return capturedClient.replies.find(r => r.id === id)?.payload;
+    };
+
+    // 1. Initial idle poll caches payload; second poll with matching knownRev returns unchanged without re-parsing
+    const r1 = await rpc(1, { method: 'state', conversationId: cid });
+    assert.equal(parseCalls, 1);
+    assert.equal(r1.unchanged, undefined);
+    assert.equal(r1.progress.completed, 1);
+    const rev1 = r1.stateRev;
+
+    const r2 = await rpc(2, { method: 'state', conversationId: cid, knownRev: rev1 });
+    assert.equal(parseCalls, 1);
+    assert.equal(r2.unchanged, true);
+    assert.equal(r2.stateRev, rev1);
+
+    // 2. Updating ONLY brain/<id>/task.md MUST invalidate cache even when transcript/db/telemetry are untouched
+    writeFileSync(join(appDataDir, 'brain', cid, 'task.md'), '- [x] Inspect remote telemetry\n- [x] Verify panel completely\n', 'utf8');
+    const r3 = await rpc(3, { method: 'state', conversationId: cid, knownRev: rev1 });
+    assert.equal(parseCalls, 2);
+    assert.equal(r3.unchanged, undefined);
+    assert.equal(r3.progress.completed, 2);
+    assert.notEqual(r3.stateRev, rev1);
+
+    // 3. Updating ONLY pricing.json single model price (same rates length, same checkedAt) MUST invalidate cache and recompute costUsd
+    const baseCost = r3.costUsd;
+    writeFileSync(join(dataDir, 'pricing.json'), JSON.stringify({
+      checkedAt: '2026-11-26T00:00:00.000Z',
+      source: 'test',
+      status: 'live',
+      rates: [{ model: 'gemini-4-hydrogen', input: 100, output: 200, cache: 50 }]
+    }), 'utf8');
+    const r4 = await rpc(4, { method: 'state', conversationId: cid, knownRev: r3.stateRev });
+    assert.equal(parseCalls, 3);
+    assert.equal(r4.unchanged, undefined);
+    assert.ok(r4.costUsd > baseCost, `expected higher cost after rate increase (${r4.costUsd} vs ${baseCost})`);
+
+    writeFileSync(join(dataDir, 'pricing.json'), JSON.stringify({
+      checkedAt: '2026-11-26T00:00:00.000Z',
+      source: 'test',
+      status: 'live',
+      rates: [{ model: 'gemini-4-hydrogen', input: 500, output: 1000, cache: 250 }]
+    }), 'utf8');
+    const r5 = await rpc(5, { method: 'state', conversationId: cid, knownRev: r4.stateRev });
+    assert.equal(parseCalls, 4);
+    assert.equal(r5.unchanged, undefined);
+    assert.ok(r5.costUsd > r4.costUsd, 'editing single model price with same checkedAt and rates.length must invalidate cache');
+
+    // 4. Keeping all files fixed, toggling ONLY execution.live.waiting MUST invalidate cache and update progress.phase
+    const baseExec = {
+      conversationId: cid,
+      status: 2,
+      turnStartStepIndex: 0,
+      userTurnStartStepIndex: 0,
+      isSystemTurn: false,
+      notFullyIdle: false,
+      activeSubagents: [],
+      live: { waiting: false, lastCase: 'plannerResponse', lastStatus: 2, hasThinking: true, hasResponse: false, toolCallCount: 0, toolName: '' }
+    };
+    const r6 = await rpc(6, { method: 'state', conversationId: cid, execution: baseExec, knownRev: r5.stateRev });
+    assert.equal(parseCalls, 5);
+    assert.equal(r6.progress.phase, 'thinking');
+
+    const waitingExec = { ...baseExec, live: { ...baseExec.live, waiting: true, toolName: 'run_command' } };
+    const r7 = await rpc(7, { method: 'state', conversationId: cid, execution: waitingExec, knownRev: r6.stateRev });
+    assert.equal(parseCalls, 6);
+    assert.equal(r7.unchanged, undefined);
+    assert.equal(r7.progress.phase, 'waiting');
+    assert.equal(r7.progress.phaseDetail, 'run_command');
+
+    assert.ok(Number.isFinite(r7.progress.phaseStartedAtMs));
+    const steady = await rpc(70, { method: 'state', conversationId: cid, execution: waitingExec, knownRev: r7.stateRev });
+    assert.deepEqual(steady, { unchanged: true, conversationId: cid, stateRev: r7.stateRev });
+    assert.ok(Buffer.byteLength(JSON.stringify(steady)) < 128);
+    assert.equal(parseCalls, 6);
+    const freshWindow = await rpc(71, { method: 'state', conversationId: cid, execution: waitingExec });
+    assert.deepEqual(freshWindow, r7);
+
+    // 5. Keeping activeSubagents.length identical (1) while changing subagent title MUST invalidate cache
+    const subA = { ...baseExec, status: 1, notFullyIdle: true, activeSubagents: [{ id: 's1', title: 'Researcher A' }], live: null };
+    const r8 = await rpc(8, { method: 'state', conversationId: cid, execution: subA, knownRev: r7.stateRev });
+    assert.equal(r8.progress.phase, 'subagent');
+    assert.equal(r8.progress.phaseDetail, 'Researcher A');
+    const subB = { ...subA, activeSubagents: [{ id: 's1', title: 'Debugger B' }] };
+    const r9 = await rpc(9, { method: 'state', conversationId: cid, execution: subB, knownRev: r8.stateRev });
+    assert.equal(r9.unchanged, undefined);
+    assert.equal(r9.progress.phaseDetail, 'Debugger B');
+
+    // 6. settings.reset restores backend DEFAULT_SETTINGS (including OS-detected language)
+    const flippedLang = DEFAULT_SETTINGS.language === 'en' ? 'zh-CN' : 'en';
+    const setRes = await rpc(10, { method: 'settings.set', settings: { language: flippedLang, compact: false } });
+    assert.equal(setRes.language, flippedLang);
+    assert.equal(setRes.compact, false);
+    const resetRes = await rpc(11, { method: 'settings.reset' });
+    assert.deepEqual(resetRes, DEFAULT_SETTINGS);
+  } finally {
+    await stop?.();
+    globalThis.fetch = originalFetch;
+    if (originalAppData === undefined) delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+    else process.env.ANTIGRAVITY_APP_DATA_DIR = originalAppData;
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -291,3 +291,13 @@ test('weeklyQuota resolves exact native reset windows, per-pool cycle boundaries
   assert.equal(placeholderUnstarted.status, 'unstarted');
   assert.equal(placeholderUnstarted.resetTimeMs, null);
 });
+
+test('weekly quota totals use separate Gemini, third-party and Argon billing boundaries', () => {
+  const day = 86400000, now = 10 * day;
+  const quotaSamples = ['gemini-weekly', '3p-weekly', 'argon-weekly'].map((bucketId, i) => ({ bucketId, resetTimeMs: now + (3 + i) * day }));
+  const range = resolveWeeklyQuotaWindow({ now, quotaSamples });
+  const models = ['Gemini Carbon', 'Orchestrator (Claude Opus)', 'GPT', 'Gemini Argon', 'unknown'];
+  const requests = models.flatMap(model => [6, 7, 8].map(d => ({ model, timestampMs: d * day })));
+  assert.deepEqual(summarizeRequests(requests, range).requests.map(r => r.timestampMs / day), [6,7,8, 7,8, 7,8, 8, 6,7,8]);
+  assert.equal(range.match({ model: 'GPT', timestampMs: now - 1, durationMs: 2 }), false);
+});

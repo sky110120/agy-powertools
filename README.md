@@ -13,10 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p>
-    <strong>简体中文</strong> |
-    <a href="README_EN.md">English</a>
-  </p>
+  <p><strong>简体中文</strong> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <a href="README_EN.md">English</a> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a></p>
   <p>
     <a href="#界面预览">界面预览</a> |
     <a href="#主要功能">主要功能</a> |
@@ -86,7 +83,7 @@
   <tr>
     <td>
       <img src="docs/images/card-settings.png" alt="多语言与显示设置" width="100%" />
-      <p>支持简体中文、繁體中文和 English 切换，包含紧凑排版、用户消息底色和额度边框周期等选项。</p>
+      <p>支持九种界面语言切换，包含紧凑排版、用户消息底色和额度边框周期等选项。</p>
     </td>
     <td>
       <img src="docs/images/card-proxy.png" alt="免 TUN 独立代理设置" width="100%" />
@@ -99,9 +96,9 @@
 
 ## 主要功能
 
-- **多语言汉化（简 / 繁 / 英）**：翻译 Antigravity 常用侧栏、菜单、权限弹窗、模型说明、设置页和 Swarm 面板，不改动聊天正文与代码块。
+- **九种界面语言**：翻译 Antigravity 常用侧栏、菜单、权限弹窗、模型说明、设置页和 Swarm 面板，不改动聊天正文与代码块。
 - **上下文与速度统计**：在输入框旁查看上下文窗口占用（含缓存复用、压缩次数和 Orchestrator 规划/执行分模型进度）以及生成速度（`tok/s`、首字延迟、模型/工具耗时和本会话参考费用），支持子智能体统计。
-- **本地用量与请求看板**：左侧栏新增 `Powertools` 页面，包含用量概览（热力图、模型分布、参考费用）、请求记录、短间隔缓存异常标红、报错一键复制、配额估算和官方参考单价拉取。
+- **本地用量与请求看板**：左侧栏新增 `Powertools` 页面，合并统计桌面端与 `agy` CLI 用量，包含用量概览（热力图、模型分布、参考费用）、请求记录、短间隔缓存异常标红、报错一键复制、配额估算和官方参考单价拉取。
 - **紧凑排版与阶段汇报**：保留客户端字号，收紧正文行高和段落间距；Agent 连续调用工具时先简要汇报进度，整轮完成后自动折进顶部用时栏。
 - **会话分支与消息编辑**：可从任意历史回答或会话菜单分支出新会话（完整保留历史，支持含子智能体的会话）；点击已发消息旁的编辑按钮可直接在原位置修改重发。
 - **多账号切换（默认关闭）**：基于 Windows 凭据管理器、macOS 钥匙串或 Linux Secret Service 本地隔离多个 Google 账号，不落明文令牌；侧栏底部可直接看额度、切号，支持耗尽自动切号。
@@ -168,12 +165,17 @@ sh ./install.sh
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | 启用 Powertools | 开启 | 插件总开关；关闭后暂停所有界面增强，保留已保存设置 |
-| 语言 | `简体中文` | 可选 `简体中文`、`繁體中文` 或 `English` |
+| 语言 | `简体中文` | 可选九种界面语言 |
+| 本地字体与字重 | 跟随客户端 | 按中文名或字体族名搜索，选择后立即生效。字重可独立设置，恢复默认会同时清除两项设置。内置终端沿用客户端字体 |
 | 紧凑排版 | 开启 | 收紧行高至 `1.4`、段落间距与工具行高，字号跟随客户端设置 |
 | 用户消息气泡着色 | 关闭 | 为用户发出的消息添加底色和细边框，支持强调色、5 套预设、自定义颜色与 10%-100% 混合强度滑条 |
 | 始终显示会话目录 | 开启 | 在多轮对话左侧常驻显示轮次跳转目录 |
 | 切换会话时保持概览 | 开启 | 切换会话时保持右侧概览面板的展开状态 |
 | 项目默认显示会话数 | `默认 (6)` | 控制侧栏每个项目默认展示条数（`默认 (6)` / `1-10` / `全部展开`） |
+| 拖入文件夹创建项目 | 开启 | 将本地文件夹拖到侧栏以创建或打开项目。仅限本地窗口 |
+| 拖入项目自动置顶 | 关闭 | 置顶通过拖放创建或打开的项目 |
+| 侧栏运行中会话流光 | 关闭 | 围绕侧栏运行中会话框显示沿圆角边缘匀速移动的 SVG 光带（默认跟随输入框配色，亦可独立配色、隐藏原生四圆点动画或试用预览；待确认态自动切为琥珀提示色） |
+| 侧栏进行中会话监控分组 | 关闭 | 在侧栏顶部置顶集中展示所有进行中的会话、所属项目、活跃子任务与等待确认提醒，支持折叠与暂停动效，无运行会话时自动隐藏 |
 | 任务栏未读提醒 | 开启 | 后台对话完成时在窗口和任务栏标题前显示 `(N)` 未读数，切回后消除 |
 
 ### 统计与进度
@@ -191,6 +193,7 @@ sh ./install.sh
 | 工作时输入框流光 | 关闭 | Agent 工作时沿输入框边框平滑旋转流光光环（空闲淡出零占用）；与额度光环同时开启时自动无缝切换，内置 6 套色板与「试用预览」按钮 |
 | 子智能体上下文与统计 | 开启 | 在概览子智能体列表、子智能体输入框和主会话浮窗显示子智能体统计 |
 | 每轮用时 / 点击展开工具 | 开启 | 在已完成回复顶部显示总耗时，点击展开工具调用与阶段汇报 |
+| 每轮底栏统计 | 关闭 | 在已完成回复底部显示当轮模型、缓存命中率、输入/输出 Token 和预估费用，悬停查看完整明细 |
 
 ### 会话增强、账号、代理与实验性上下文
 
@@ -210,6 +213,7 @@ sh ./install.sh
 | 名称 / 路径 | 说明 |
 | --- | --- |
 | `ANTIGRAVITY_USER_DATA_DIR` | 使用独立客户端配置目录时指定自定义用户数据目录 |
+| `ANTIGRAVITY_CLI_DATA_DIR` | 自定义 `agy` CLI 数据目录路径（默认自动合并 `~/.gemini/antigravity-cli`） |
 | `ANTIGRAVITY_CDP_PORT_FILE` | 显式指定 `DevToolsActivePort` 绝对路径（兼容 `AGY_BROWSER_ACTIVE_PORT_FILE`） |
 | `~/.gemini/config/plugins/agy-powertools/` | 插件程序与运行脚本安装目录 |
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | 个人设置、账号记录、配额采样和参考单价缓存目录 |
@@ -219,6 +223,45 @@ sh ./install.sh
 ---
 
 ## 更新日志
+
+### v2.16.7
+- **新增六语种原生国际化支持（共九种界面语言，吸收法语 PR #80，感谢 `@oxibys`）**：
+  - 在原有简体中文、繁體中文、English 基础上，新增法语（`Français`）、日语（`日本語`）、韩语（`한국어`）、德语（`Deutsch`）、西班牙语（`Español`）与俄语（`Русский`），完整覆盖插件面板、Antigravity 原生界面、Swarm 面板、伴生辅助页、日期选择器与系统提示。
+  - 采用按需加载的模块化语言包架构（`lib/locales/`）：窗口启动仅注入当前激活语种，设置页切换语言时经由 `i18n.pack` RPC 实时拉取，并同步支持系统语系自动初始化与分语种 `custom-i18n.json` 覆盖；同步补全九种语言的项目 README 文档。
+- **补全侧边栏排序与筛选菜单翻译（#79）**：补充 Antigravity 侧栏显示选项菜单中的 `Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 及菜单作用域内的 `Project` 词条，保持普通项目名与代码块不受影响。
+- **彻底修复 Windows 11 重启后 Windows Terminal 残留及关闭窗口连带退出客户端（#61 后续，感谢 `@poneisme` 与社区反馈）**：`relaunch-antigravity.ps1` 改为通过无窗口 CUI 自身子进程（`-LaunchOnly` + `CreateNoWindow = $true`）再经 `Start-Process`（`ShellExecuteEx`，`bInheritHandles = FALSE`）拉起 `Antigravity.exe`（回退路径附加 `<NUL >NUL 2>&1`），彻底切断 Windows Terminal ConPTY 句柄继承与 `AttachConsole` 附着，且全程保持零 `-EncodedCommand` / DCOM / VBS / `conhost --headless` 杀软兼容。
+
+### v2.16.6
+- **修复侧栏运行中会话开启流光后无法点击的问题**：移除覆盖原生侧栏行子元素 `position` 的样式规则，恢复整行 `<a href>` 链接及悬停操作按钮的正常点击。
+- **优化侧栏底部流光层级与边缘渐隐**：将 `pointer-events: none` 的流光层提升至悬停操作栏上方（`z-index: 20`），消除右侧图标背景方块对光晕的硬切遮挡；新增左右两端渐隐遮罩（`.agy-sb-fade`），让流光进入与离开底边时平滑过渡。
+
+### v2.16.5
+- **修复统计偏差与历史记录丢失（#63）**：
+  - `lib/quota.mjs` 拦截归零或回退扫描写入脏检查点，估算分段跳过回退区间并保留已测进度。
+  - `lib/dashboard.mjs` 按请求所属配额池（Gemini / Claude / Argon）独立匹配各自周重置周期的上下界，避免多池重置时间不同导致跨周期多算。
+  - `lib/analytics.mjs` 新增按数据目录隔离的原子请求归档（保留 90 天、最多 20,000 条），清理旧会话 `.db` 后周统计不再断崖下跌。
+- **界面精简与原生设置补翻**：
+  - 移除输入框上下文窗口圆环、子智能体圆环与速度统计触发按钮上的冗余悬浮提示（保留 `aria-label`），展开弹窗时不再遮挡内容。
+  - 精简概览「费用」卡片与模型表头：移除长悬浮提示、估算口径副标题与表头虚线，仅保留金额与单次均价。
+  - 补齐 5 处 Antigravity 2.35.2 原生设置词条（`Search shortcuts...`、`Settings for conversations outside of projects`、`Hide breakdown`、`Notification settings`、`Automatic check for updates`）及繁体中文映射与输入框 `placeholder` 还原。
+- **社区 PR 合并与优化**：
+  - **本地字体与字重选择（PR #78，感谢 `@awei84`）**：采用单排原生下拉选择本机字体与字重，通过 OpenType `name` 表与内置映射自动显示中文字体名并支持中英文混合搜索；字重列表仅展示所选字体实际拥有的字重（默认或单字重字体自动灰显禁用），并隔离图标字体与终端。
+  - **侧栏运行中底部流光与「进行中」置顶监控分组（PR #76，感谢 `@whitzard0421`）**：均默认关闭；流光采用纯 CSS 底部左向右柔光滑动与 1px 微光边线（零 WebGL 占用、遵循减少动态效果偏好），「进行中」分组复用原生侧栏排版。
+  - **拖拽文件夹到侧栏新建项目（PR #73，感谢 `@niuanhua-ydy`）**：支持将本地文件夹直接拖放至侧栏创建项目，包含目录与符号链接校验及 SSH 远端窗口隔离。
+  - **每轮回复底部统计（PR #65，感谢 `@wwwsideexiecom-boop`）**：默认关闭；开启后在回复底部及悬浮明细中显示模型、缓存命中率、输入输出 Token 与当前轮次估算费用。
+
+### v2.16.4
+- **修复 Windows 重启闪黑框与进程会话继承（#61）**：重启脚本改用 `ProcessStartInfo`（`UseShellExecute = $false`、`CreateNoWindow = $true`）拉起 `Antigravity.exe`，避免新实例继承 PowerShell 控制台会话。
+- **修复 macOS 大体积 OAuth 凭据写入超限并避免密文进入命令行（#75）**：当 `/usr/bin/security -i` 的十六进制命令接近 4096 字节行缓冲上限时，改用 `/usr/bin/osascript -l JavaScript` 通过标准输入调用 `Security.framework`（`SecItemUpdate` / `SecItemAdd` 并配置 `/usr/bin/security` 访问控制列表），所有大小的凭据均不出现在 `argv` 中。
+- **降低长会话轮询的解析与传输开销（#62）**：伴生进程按文件指纹（含 `task.md`）、完整执行态、费率与设置缓存解析结果，前端携带 `knownRev` 且状态未变化时直接返回 `{ unchanged: true, stateRev }`，运行中阶段计时改由前端按 `phaseStartedAtMs` 本地推进。
+- **修复 macOS 冷启动自动重启冷却残留与并发竞态（#64）**：调试端口与代理就绪后清空冷却时间戳并增加代理启动重试；统一冷启动代理探测与缺失调试端口两条路径的协调锁，避免同时调度两次重启。
+- **修复原位编辑快捷键与状态恢复问题（#70）**：尊重宿主 `sendWithModEnter` 偏好（开启组合键发送时放行普通 Enter 换行，支持 `Cmd/Ctrl+Enter` 提交），优化编辑横幅样式，外部窗口启动会话时归位输入框并恢复编辑前草稿及附件。
+- **消除切换会话时备用目录浮层闪烁（#74）**：切换会话后为原生 `conversation-navigator` 挂载留出 220 ms 宽限期，原生目录出现后不再闪烁显示 `.pt-outline`。
+- **支持自定义汉化词典、补全 2.35 命令说明并按系统语言初始化（#68、#69）**：支持读取 `plugin_data/agy-powertools/custom-i18n.json` 补充未覆盖词条，补齐 2.35 新增的 10 个斜杠命令说明；首次启动按操作系统语言（兼容 BCP-47 与 POSIX 下划线格式）选择默认界面语言，重置设置通过后端 `settings.reset` 保持系统默认语言。
+- **社区 PR 合并**：
+  - **SSH 远端窗口早期启动恢复（PR #67，关闭 #66，感谢 `@qimengdunjia`）**：容忍早期启动时 `service()` 尚未挂载并在配置变更后重跑 `applyOptions()`。
+  - **合并 Antigravity CLI 统计与 Argon 独立额度池（PR #71，感谢 `@zhangyu-ch`）**：自动合并 `~/.gemini/antigravity-cli/conversations/*.db` 至看板统计，自愈旧配额检查点并分离 `argon` 额度池。
+  - **管理页顶栏与筛选栏滚动吸顶（PR #72，感谢 `@niuanhua-ydy`）**：为 Powertools 管理页顶栏与筛选栏增加滚动吸顶与分隔线。
 
 ### v2.16.3
 - **修复 Windows 免 TUN 代理重启被杀软拦截（#53）**：移除 `-EncodedCommand`、`ShellWindows` DCOM、`CreateProcessW` 与 `.vbs`，改为使用普通 `-File` 脚本在插件数据目录内生成临时 `.lnk` 并通过 `explorer.exe` 拉起（执行后自动删除 `.lnk`、`.ack` 与 `.ps1`），避免 Windows Defender AMSI 与火绒拦截；启用代理时校验新进程命令行包含 `--proxy-server=`。

@@ -274,7 +274,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     URL,
     window: { addEventListener() {}, removeEventListener() {} },
     location: { pathname: '/' },
-    document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } },
+    document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} }, querySelector: hooks.querySelector || (() => null) },
     setInterval: hooks.setInterval || (() => 1),
     clearInterval: hooks.clearInterval || (() => {}),
     UP: 'row',
@@ -286,7 +286,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
     Sy: 'tooltip',
     navigator: hooks.navigator ?? { clipboard: { writeText: async text => { hooks.onClipboardWrite?.(text); } } },
-    HC: 'popover',
+    HC: hooks.Popover || 'popover',
     IC: 'popover-trigger',
     JC: 'popover-content',
     kT: 'select',
@@ -1578,9 +1578,15 @@ test('Pricing provides standard vs API promo basis switch, clean single-row rate
     assert.equal(ui.collectText(priceTree).includes(forbidden), false);
   }
 
-  // 2. Overview & Settings reflect standard basis (with data-pt-tip theme tooltip)
+  // 2. The request table retains the pricing tooltip.
   const ovStd = ui.renderOverview(sampleDash);
-  assert.equal(ui.collectText(ui.find(ovStd, 'agy-overview-cost-basis')), 'API 正式标准价估值');
+  assert.equal(ui.find(ovStd, 'agy-overview-cost-basis'), null);
+  const costCard = ui.findAll(ovStd, n => n.props?.className === 'pt-card pt-metric' && ui.collectText(n).includes('费用'))[0];
+  assert.ok(ui.collectText(costCard).includes('单次均价'));
+  assert.equal(costCard.props['data-pt-tip'], undefined);
+  const overviewCostHeader = ui.findAll(ovStd, n => n.type === 'th' && ui.collectText(n) === '费用')[0];
+  assert.ok(overviewCostHeader);
+  assert.equal(overviewCostHeader.props['data-pt-tip'], undefined);
   const reqStd = ui.renderEventTable(sampleDash, false);
   const costTh = ui.findAll(reqStd, n => n.type === 'th' && n.props?.className?.includes('pt-cost-th'))[0];
   assert.ok(costTh?.props?.['data-pt-tip']?.includes('正式标准单价'));
@@ -1603,7 +1609,7 @@ test('Pricing provides standard vs API promo basis switch, clean single-row rate
   assert.ok(promoText.includes('$2'));
   assert.ok(promoText.includes('$10'));
   assert.equal(promoText.includes('正式 $4'), false);
-  assert.equal(ui.collectText(ui.find(ui.renderOverview(sampleDash), 'agy-overview-cost-basis')), '含 API 首发优惠口径');
+  assert.equal(ui.find(ui.renderOverview(sampleDash), 'agy-overview-cost-basis'), null);
 
   // 4. English locale in promo mode shows clean expiry badge with zero middle dots (and hides it in standard mode)
   const enUi = createPanelHarness(
@@ -1867,6 +1873,25 @@ test('createAccountsStore tracks onboarding acceptance from app_storage.json and
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('快捷浮窗内的字体弹层搜索、重新读取及 Escape 不关闭外层', () => {
+  let nestedOpen = true;
+  const ui = createPanelHarness(null, { multiAccount: false }, {
+    Popover: props => ({ type: 'popover', props, children: props.children }),
+    querySelector: selector => nestedOpen && selector.includes('[data-testid="agy-font-picker"]') ? {} : null
+  });
+  const popover = ui.findAll(ui.renderQuickPopover(), node => node.type === 'popover')[0];
+  popover.props.onOpenChange(true);
+  for (const type of ['pointerdown', 'keydown']) {
+    let canceled = false;
+    popover.props.onOpenChange(false, { event: { type, key: 'Escape', target: { closest: () => null } }, cancel: () => { canceled = true; } });
+    assert.equal(canceled, true);
+    assert.equal(ui.findAll(ui.renderQuickPopover(), node => node.type === 'popover')[0].props.open, true);
+  }
+  nestedOpen = false;
+  popover.props.onOpenChange(false, { event: { target: { closest: () => null } } });
+  assert.equal(ui.findAll(ui.renderQuickPopover(), node => node.type === 'popover')[0].props.open, false);
 });
 
 test('Sidebar badge, QuickPopover info dot, and About toggles reflect discovered updates cleanly without middle dots (Issue #45)', () => {

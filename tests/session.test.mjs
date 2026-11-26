@@ -103,3 +103,72 @@ test('native integration follows conversation titles and excludes external pages
   assert.equal(findIdentifier({events:[{metadata:{projectId:'source-project'}}]},['projectId']),'source-project');
 });
 
+test('parseSessionData aggregates per-turn model, cache hit rate, tokens, and speed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-turn-meta-'));
+  const previous = process.env.ANTIGRAVITY_APP_DATA_DIR;
+  process.env.ANTIGRAVITY_APP_DATA_DIR = root;
+  try {
+    const logs = join(root, 'brain', 'turnmeta', '.system_generated', 'logs');
+    mkdirSync(logs, { recursive: true });
+    mkdirSync(join(root, 'conversations'), { recursive: true });
+    const steps = [
+      { step_index: 0, type: 'USER_INPUT', created_at: '2025-01-01T00:00:00Z', content: 'turn one' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', created_at: '2025-01-01T00:00:01Z', content: 'reply one' },
+      { step_index: 2, type: 'USER_INPUT', created_at: '2025-01-01T00:00:10Z', content: 'turn two' },
+      { step_index: 3, type: 'PLANNER_RESPONSE', created_at: '2025-01-01T00:00:11Z', content: '', tool_calls: [{ name: 'run_command', args: { CommandLine: 'ls' } }] },
+      { step_index: 4, type: 'GENERIC', created_at: '2025-01-01T00:00:12Z', content: 'ok' },
+      { step_index: 5, type: 'PLANNER_RESPONSE', created_at: '2025-01-01T00:00:13Z', content: 'reply two' }
+    ];
+    writeFileSync(join(logs, 'transcript.jsonl'), steps.map(s => JSON.stringify(s)).join('\n'));
+    const mkGen = (stepIndices, modelName, inTok, cacheTok, outTok, thinkTok, ttftSec, streamSec) => concat(
+      bytes(1, concat(
+        bytes(4, concat(integer(2, inTok), integer(3, outTok), integer(5, cacheTok), integer(9, thinkTok))),
+        bytes(11, duration(ttftSec)),
+        bytes(12, duration(streamSec)),
+        bytes(21, modelName)
+      )),
+      ...stepIndices.map(idx => integer(2, idx))
+    );
+    const dbPath = join(root, 'conversations', 'turnmeta.db');
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB); CREATE TABLE steps(idx INTEGER PRIMARY KEY,metadata BLOB);');
+    db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(0, mkGen([1], 'Gemini 4 Neon (High)', 200, 800, 100, 20, 1, 2));
+    db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(1, mkGen([3], 'Gemini 4 Neon (High)', 300, 700, 50, 10, 1, 1));
+    db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(2, mkGen([5], 'Gemini 4 Flash (Medium)', 500, 1500, 150, 30, 1, 3));
+    db.close();
+
+    const state = parseSessionData('turnmeta', { includeSessions: false });
+    assert.equal(state.turns.length, 2);
+
+    const t1 = state.turns[0];
+    assert.equal(t1.shortModel, 'Neon');
+    assert.equal(t1.modelName, 'Gemini 4 Neon (High)');
+    assert.deepEqual(t1.models, ['Gemini 4 Neon (High)']);
+    assert.equal(t1.newInputTokens, 200);
+    assert.equal(t1.cacheReadTokens, 800);
+    assert.equal(t1.totalInputTokens, 1000);
+    assert.equal(t1.outputTokens, 100);
+    assert.equal(t1.thinkingTokens, 20);
+    assert.equal(t1.cacheHitPercent, 80);
+    assert.equal(t1.requestCount, 1);
+    assert.equal(t1.tps, 50);
+
+    const t2 = state.turns[1];
+    assert.equal(t2.shortModel, 'Neon → Flash');
+    assert.equal(t2.modelName, 'Gemini 4 Flash (Medium)');
+    assert.deepEqual(t2.models, ['Gemini 4 Neon (High)', 'Gemini 4 Flash (Medium)']);
+    assert.equal(t2.newInputTokens, 800);
+    assert.equal(t2.cacheReadTokens, 2200);
+    assert.equal(t2.totalInputTokens, 3000);
+    assert.equal(t2.outputTokens, 200);
+    assert.equal(t2.thinkingTokens, 40);
+    assert.equal(t2.cacheHitPercent, 73.3);
+    assert.equal(t2.requestCount, 2);
+    assert.equal(t2.tps, 50);
+  } finally {
+    if (previous === undefined) delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+    else process.env.ANTIGRAVITY_APP_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+

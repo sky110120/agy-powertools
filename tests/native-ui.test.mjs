@@ -61,6 +61,172 @@ test('already-loaded injection initializes without waiting and disposes cleanly'
   assert.ok(p.nodes.every(n => !n.isConnected));
 });
 
+function fontPage(initial = {}) {
+  const p = page(true), properties = new Map(), writes = [];
+  let env, stored = { enabled: true, customFont: '', ...initial };
+  p.document.documentElement.style = { setProperty: (k, v) => properties.set(k, v), removeProperty: k => properties.delete(k) };
+  const create = p.document.createElement;
+  p.document.createElement = tag => {
+    if (tag !== 'canvas') return create(tag);
+    return { getContext: () => ({
+      font: '',
+      measureText() {
+        // 首个等宽基准恰好同宽，第二个基准仍能识别已安装字体。
+        return { width: this.font.includes('"Maple Mono NF CN"') ? 100 : this.font.includes('serif') ? 80 : 100 };
+      }
+    }) };
+  };
+  vm.runInContext(readFileSync(new URL('../lib/native-fonts.js', import.meta.url),'utf8'), p.context);
+  p.context.__agyPanels = value => { env = value; return { dispose() {} }; };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyInitialSettings = stored;
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    if (req.method === 'settings.set') { writes.push(req.settings); stored = { ...stored, ...req.settings }; }
+    queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, req.method.startsWith('settings.') ? stored : {}));
+  };
+  vm.runInContext(source, p.context);
+  return { ...p, properties, writes, env, setStored: patch => { stored = { ...stored, ...patch }; } };
+}
+
+test('本地字体保存后立即应用，清空、总开关和卸载均恢复客户端样式', async () => {
+  const p = fontPage();
+  await new Promise(resolve => setImmediate(resolve));
+  await p.env.change({ customFontWeight: 500 });
+  assert.equal(p.properties.get('--agy-custom-weight'), '500');
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  await p.env.change({ customFont: 'Maple Mono NF CN' });
+  assert.equal(p.env.settingsError(), '');
+  assert.equal(p.context.__agyPowertools.settings.customFont, 'Maple Mono NF CN');
+  assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), true);
+  await p.env.change({ enabled: false });
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+  await p.env.change({ enabled: true });
+  assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  await p.env.change({ customFont: '' });
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  await p.env.change({ customFont: 'Maple Mono NF CN' });
+  p.context.__agyPowertools.dispose();
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+});
+
+test('不存在或格式错误的字体明确报错，不保存、不覆盖已生效字体', async () => {
+  const p = fontPage({ customFont: 'Maple Mono NF CN' });
+  await new Promise(resolve => setImmediate(resolve));
+  for (const customFont of ['Missing Font', 'Maple\nMono', 'Inter;serif', 'Bad\\Font', 123]) {
+    await p.env.change({ customFont });
+    assert.match(p.env.customFontError(), /字体/);
+    assert.equal(p.writes.length, 0);
+    assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  }
+  await p.env.change({ customFont: '' });
+  assert.equal(p.env.settingsError(), '');
+  p.context.__agyPowertools.dispose();
+});
+
+test('旧设置中的字体在本机不可用时显示错误，清空后可以恢复', async () => {
+  const p = fontPage({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /未检测到本地字体/);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+  await p.env.change({ customFont: '' });
+  assert.equal(p.env.settingsError(), '');
+  p.context.__agyPowertools.dispose();
+});
+
+test('字体检测错误不污染代理保存，语言切换及安装后同名重试可恢复', async () => {
+  const p = fontPage({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /未检测到/);
+  await p.env.change({ proxyUrl: 'http://127.0.0.1:7890', proxyEnabled: true });
+  assert.equal(p.env.settingsError(), '');
+  assert.equal(p.env.options().proxyUrl, 'http://127.0.0.1:7890');
+  await p.env.change({ language: 'en' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /Local font/);
+  p.context.queryLocalFonts = async () => [{ family: 'Missing Font' }];
+  p.context.navigator = { permissions: { query: async () => ({ state: 'granted' }) } };
+  await p.env.change({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.env.customFontError(), '');
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), true);
+  p.context.__agyPowertools.dispose();
+});
+
+test('系统字体清单规范化去重，接受 Canvas 同宽的已安装字体，并保留读取错误', async () => {
+  const p = fontPage();
+  await new Promise(resolve => setImmediate(resolve));
+  p.context.queryLocalFonts = async () => [
+    { family: ' Inter ' }, { family: 'Inter' }, { family: 'System' },
+    { family: '' }, { family: 'bad\nfont' }, { family: 'x'.repeat(129) }, { family: null }
+  ];
+  const families = await p.env.loadLocalFonts();
+  assert.deepEqual(Array.from(families), ['Inter', 'System']);
+  await p.env.change({ customFont: 'inter' });
+  assert.equal(p.env.customFontError(), '');
+  assert.equal(p.env.options().customFont, 'inter');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.properties.get('--agy-custom-font'), '"inter"');
+  p.context.queryLocalFonts = async () => [];
+  await assert.rejects(p.env.loadLocalFonts, /未读取到/);
+  p.context.queryLocalFonts = async () => { throw new Error('权限被拒绝'); };
+  await assert.rejects(p.env.loadLocalFonts, /权限被拒绝/);
+  delete p.context.queryLocalFonts;
+  await assert.rejects(p.env.loadLocalFonts, /不支持读取/);
+  p.context.__agyPowertools.dispose();
+});
+
+test('权限接口异常或缺少用户手势时继续核验字形，并保留失败原因', async () => {
+  for (const mode of ['unsupported-name', 'missing-method', 'security-error']) {
+    const p = fontPage();
+    await new Promise(resolve => setImmediate(resolve));
+    p.context.queryLocalFonts = async () => { throw new Error('SecurityError: requires user activation'); };
+    p.context.navigator = { permissions: mode === 'missing-method' ? {} : {
+      query: async () => { if (mode === 'unsupported-name') throw new TypeError('Unsupported permission local-fonts'); return { state: 'granted' }; }
+    } };
+    await p.env.change({ customFont: 'Maple Mono NF CN' });
+    assert.equal(p.env.customFontError(), '');
+    assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+    if (mode !== 'missing-method') assert.match(p.env.customFontNotice(), /Unsupported permission|SecurityError/);
+    await p.env.change({ customFont: 'Missing Font' });
+    assert.match(p.env.customFontError(), /未检测到/);
+    if (mode !== 'missing-method') assert.match(p.env.customFontError(), /Unsupported permission|SecurityError/);
+    assert.equal(p.env.options().customFont, 'Maple Mono NF CN');
+    p.context.__agyPowertools.dispose();
+  }
+});
+
+test('await 字体保存返回后已清除旧运行时错误并完成样式同步', async () => {
+  const p = fontPage({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /未检测到/);
+  await p.env.change({ customFont: 'Maple Mono NF CN' });
+  assert.equal(p.env.customFontError(), '');
+  assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  p.context.__agyPowertools.dispose();
+});
+
+test('异步字体检测完成后不覆盖已关闭的插件，也不会在卸载后重新加样式', async () => {
+  const p = fontPage();
+  await new Promise(resolve => setImmediate(resolve));
+  let resolveFonts;
+  p.context.queryLocalFonts = () => new Promise(resolve => { resolveFonts = resolve; });
+  p.context.navigator = { permissions: { query: async () => ({ state: 'granted' }) } };
+  // 通过外部同步设置触发检测，而非阻塞保存中的验证。
+  p.setStored({ customFont: 'Inter' });
+  await p.env.change({ language: 'en' });
+  await new Promise(resolve => setImmediate(resolve));
+  await p.env.change({ enabled: false });
+  resolveFonts([{ family: 'Inter' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  p.context.__agyPowertools.dispose();
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+});
+
 test('multi-pane conversations with multiple composers stay healthy without triggering reload loops', () => {
   const p = page(true);
   p.context.location.pathname = '/c/conv-1';
@@ -1169,6 +1335,82 @@ test('SSH command paste observes setting changes without reinstalling its listen
   p.context.__agyPowertools.dispose();
 });
 
+test('sidebar folder drop observes setting changes, checks local Electron support, excludes SSH windows, and initializes global toast via sidebar', async () => {
+  const p = page(true);
+  const settings = { enabled: true };
+  p.context.__agyInitialSettings = settings;
+  let change, dropOpts, installs = 0;
+  const createProjectCalls = [];
+  p.context.electronNative = { getPathForFile: f => f?.mockPath || '' };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.createProjectsFromDroppedEntries = (entries, opts) => {
+    createProjectCalls.push({ entries, opts });
+    return { created: entries, existing: [], skippedFiles: 0, pinned: Boolean(opts?.pin) };
+  };
+  p.context.__agyPanels = env => { change = env.change; return { Page: () => null, Sidebar: () => null, dispose() {} }; };
+  p.context.installSidebarFolderDrop = (_document, opts) => { dropOpts = opts; installs++; };
+  p.context.__agyPowertoolsHost = raw => {
+    const { id, method, settings: patch } = JSON.parse(raw);
+    if (method === 'settings.set') Object.assign(settings, patch);
+    queueMicrotask(() => p.context.__agyPowertoolsReceive?.(id, { ...settings }));
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(installs, 1);
+  assert.equal(dropOpts.enabled(), true);
+  assert.equal(dropOpts.pinProject(), false);
+  assert.equal(dropOpts.isSupported(), true);
+  assert.equal(dropOpts.getPathForFile({ mockPath: '/fixtures/team/app' }), '/fixtures/team/app');
+  await change({ sidebarFolderDropPin: true });
+  assert.equal(dropOpts.pinProject(), true);
+  dropOpts.createProjects([{ path: '/fixtures/team/app' }], { pin: true });
+  assert.deepEqual(createProjectCalls.at(-1)?.opts, { pin: true });
+  const styleNode = p.nodes.find(n => 'agyDensityStyle' in (n.dataset || {}));
+  assert.match(styleNode?.textContent || '', /@keyframes agy-project-drop-highlight/);
+  assert.match(styleNode?.textContent || '', /\[data-agy-project-highlight="true"\]/);
+  await change({ sidebarFolderDrop: false });
+  assert.equal(dropOpts.enabled(), false);
+  await change({ sidebarFolderDrop: true });
+  assert.equal(dropOpts.enabled(), true);
+  p.context.sshRemote = { kind: 'ssh' };
+  assert.equal(dropOpts.isSupported(), false);
+  p.context.sshRemote = { kind: 'local' };
+  assert.equal(dropOpts.isSupported(), true);
+  delete p.context.electronNative;
+  assert.equal(dropOpts.isSupported(), false);
+  p.context.__agyPowertools.dispose();
+
+  // Verify SidebarEntry initializes global toast even without a mounted conversation composer
+  const pToast = page(true);
+  const toasts = [];
+  const custLink = { isConnected: true, nextSibling: null, parentElement: { insertBefore(n) { n.isConnected = true; } } };
+  pToast.document.querySelector = sel => sel === 'a[href="/customizations"]' ? custLink : null;
+  pToast.context.electronNative = { getPathForFile: f => f?.mockPath || '' };
+  pToast.context.React = {
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useEffect: fn => { fn(); }
+  };
+  pToast.context.ReactDOM = {
+    createRoot: () => ({
+      render(tree) {
+        if (typeof tree?.type === 'function') tree.type(tree.props || {});
+      },
+      unmount() {}
+    })
+  };
+  pToast.context.um = () => payload => toasts.push(payload);
+  let sidebarDropOpts;
+  pToast.context.installSidebarFolderDrop = (_document, opts) => { sidebarDropOpts = opts; };
+  pToast.context.__agyNativeAdapter.wrap = el => el;
+  pToast.context.__agyNativeAdapter.installPage = () => true;
+  pToast.context.__agyPanels = () => ({ Page: () => null, Sidebar: () => null, dispose() {} });
+  pToast.context.__agyInitialSettings = { enabled: true };
+  vm.runInContext(source, pToast.context);
+  sidebarDropOpts.notify({ title: 'Project created', message: 'demo' });
+  assert.deepEqual(toasts, [{ title: 'Project created', message: 'demo' }]);
+  pToast.context.__agyPowertools.dispose();
+});
+
 test('long-conversation mount skips redundant document style writes, skips unchanged root renders, and defers during IME/touch', async () => {
   const p = page(true);
   let styleWrites = 0;
@@ -1409,7 +1651,6 @@ test('native-panels and native-ui replace raw HTML/SVG title tooltips with theme
   assert.equal(panelsSrc.includes("h('title'"), false);
   assert.match(panelsSrc, /pt-trail-node'[^\n]*'data-pt-tip':call\.detail\|\|call\.label,'data-pt-tip-mono':call\.detail\?'true':undefined,'data-pt-tip-place':'left'/);
   assert.match(panelsSrc, /pt-donut-segment[^\n]*'data-pt-tip':segTip,'aria-label':segTip/);
-  assert.match(uiSrc, /'data-testid': 'agy-context-ring-trigger',\s*'data-pt-tip':/);
   assert.match(uiSrc, /'data-testid': 'agy-subagent-badge',\s*'data-subagent-id': subId,\s*'data-pt-tip':/);
 });
 
@@ -1887,6 +2128,8 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
   p.context.setInterval = (fn, ms) => { const entry = { fn, ms }; intervals.push(entry); return intervals.length; };
   p.context.clearInterval = () => {};
 
+  const footers = [];
+  let footerEnabled = true, thinkingTokens = 1, turnStatus = 'complete';
   let ringRenders = 0;
   let fiberWalks = 0;
   const card = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
@@ -1921,7 +2164,9 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
   p.context.ReactDOM = {
     createRoot(mount) {
       return {
-        render() { if (mount.dataset?.agyPowertoolsRoot === 'ring') ringRenders++; },
+        render(tree) {
+          if (mount.dataset?.agyPowertoolsRoot === 'turn-meta') footers.push(tree.type(tree.props).props['data-pt-tip']);
+          if (mount.dataset?.agyPowertoolsRoot === 'ring') ringRenders++; },
         unmount() {}
       };
     }
@@ -1933,7 +2178,7 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
     return { memoizedProps: { container: { steps: [{ step: { case: 'userInput' }, metadata: { index: 0 } }] } }, return: null };
   };
 
-  let stateVersion = 1;
+  let stateVersion = 1, turnCost = null;
   let stateRequests = 0;
   const makeStateReply = () => ({
     conversationId: 'conv-long-51',
@@ -1942,10 +2187,10 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
     contextWindow: { usedTokens: 42000 * stateVersion, maxTokens: 1000000, usedPercent: 4.2 * stateVersion, inputTokens: 1000, cacheReadTokens: 41000, categories: [] },
     telemetry: { turnCount: 1, stepCount: 5, totalTokens: 45000 * stateVersion, requestCount: 2, errorCount: 0, toolCount: 1, tps: 88, latestTps: 88, cacheHitPercent: 97.6 },
     progress: { status: 'complete', phase: 'done', phaseDetail: '', toolCount: 1, recentActivity: [], tasks: [] },
-    turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 4, status: 'complete', completedAtIso: '2026-11-25T00:00:00Z', durationMs: 4200, toolCalls: [] }],
+    turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 4, status: turnStatus, costUsd: turnCost, thinkingTokens, shortModel: 'Fixture', completedAtIso: '2026-11-25T00:00:00Z', durationMs: 4200, toolCalls: [] }],
     requests: [{ id: 'req-1', timestampMs: 1_795_699_995_000 }],
     errors: [],
-    settings: { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' }
+    settings: { turnMeta: footerEnabled, enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' }
   });
   p.context.__agyPowertoolsHost = raw => {
     const req = JSON.parse(raw);
@@ -1990,6 +2235,27 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
   assert.equal(ringRenders, initialRingRenders + 1);
   assert.equal(fiberWalks, initialFiberWalks);
 
+  const poll = async () => {
+    fakeNow += 7000;
+    mainPoll.fn();
+    await new Promise(r => setTimeout(r, 20));
+  };
+  const footerMount = () => actionRow.children.filter(n => n.isConnected && n.dataset.agyPowertoolsRoot === 'turn-meta');
+  turnCost = 0.0035;
+  await poll();
+  assert.match(footers.at(-1), /费用: \$0\.0035/);
+  thinkingTokens = 17;
+  await poll();
+  assert.match(footers.at(-1), /17/);
+  footerEnabled = false;
+  await poll();
+  assert.equal(footerMount().length, 0);
+  turnStatus = 'running'; footerEnabled = true;
+  await poll();
+  assert.equal(footerMount().length, 0);
+  turnStatus = 'complete';
+  await poll();
+  assert.equal(footerMount().length, 1);
   p.context.__agyPowertools.dispose();
 });
 
@@ -2164,4 +2430,518 @@ test('auto-check update banner shows one-click update/dismiss and optional autoI
   assert.equal(calls.some(c => c.method === 'update.install' && c.version === '2.18.0'), true);
 
   ctx.__agyPowertools.dispose();
+});
+
+test('native-ui retries applyOptions after transient boot failure and re-applies adapter options on remote settingsChanged (Issue #66)', async () => {
+  const source = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
+  const intervals = [];
+  let failSetEnabledCount = 3; // Fail initial boot applyOptions + mount() refresh + queued startup refresh
+  const applied = { enabled: null, stageUpdates: null, efficientIO: null, contextLimit: null, sidebarProjectLimit: null };
+  let remoteSettings = { enabled: true, stageUpdates: true, efficientIO: false, contextLimit: 500000, sidebarProjectLimit: 5 };
+  let settingsGetCount = 0;
+
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      visibilityState: 'visible',
+      title: 'Antigravity (SSH: remote-box)',
+      head: { append() {}, appendChild() {}, querySelector: () => null },
+      body: { append() {}, appendChild() {}, querySelector: () => null, querySelectorAll: () => [] },
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: () => ({ dataset: {}, style: {}, remove() {} }),
+      addEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { userAgent: 'Antigravity/2.35.2' },
+    location: { pathname: '/c/conv-ssh-66' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyInitialSettings: { ...remoteSettings },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'conv-ssh-66', status: 2 }),
+      runningConversationIds: () => ['conv-ssh-66'],
+      capabilities: () => ({}),
+      setEnabled(v) {
+        if (failSetEnabledCount > 0) { failSetEnabledCount--; throw new Error('Antigravity conversation service is unavailable'); }
+        applied.enabled = v;
+      },
+      setStageUpdates(v) { applied.stageUpdates = v; },
+      setEfficientIO(v) { applied.efficientIO = v; },
+      setContextLimit(v) { applied.contextLimit = v; },
+      setSidebarProjectLimit(v) { applied.sidebarProjectLimit = v; },
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') {
+        settingsGetCount++;
+        ctx.__agyPowertoolsReceive(msg.id, { ...remoteSettings });
+      } else if (msg.method === 'state') {
+        ctx.__agyPowertoolsReceive(msg.id, {
+          conversationId: 'conv-ssh-66',
+          turns: [],
+          requests: [],
+          errors: [],
+          contextWindow: {},
+          telemetry: {},
+          progress: {},
+          settings: { ...remoteSettings }
+        });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: () => 1,
+    clearTimeout() {}
+  });
+
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  // Initial sync applyOptions and startup refresh attempts all threw -> settingsLoaded must remain false so next poll retries.
+  assert.ok(settingsGetCount >= 1);
+  assert.equal(applied.stageUpdates, null);
+
+  const beforeRetryCount = settingsGetCount;
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  assert.ok(mainPoll);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(settingsGetCount, beforeRetryCount + 1);
+  assert.equal(applied.enabled, true);
+  assert.equal(applied.stageUpdates, true);
+  assert.equal(applied.efficientIO, false);
+  assert.equal(applied.contextLimit, 500000);
+  assert.equal(applied.sidebarProjectLimit, 5);
+
+  // Simulate another window updating settings; state poll returns updated settings and must re-apply adapter options.
+  remoteSettings = { enabled: true, stageUpdates: false, efficientIO: true, contextLimit: 1000000, sidebarProjectLimit: 3 };
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(applied.stageUpdates, false);
+  assert.equal(applied.efficientIO, true);
+  assert.equal(applied.contextLimit, 1000000);
+  assert.equal(applied.sidebarProjectLimit, 3);
+
+  ctx.__agyPowertools.dispose();
+});
+
+test('management Page keeps header and tabs sticky on scroll, toggles scrolled border, and resets scroll on tab switch', () => {
+  const panelsCode = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const styles = [];
+  const states = [];
+  const refs = [];
+  const effects = [];
+  const resizeObservers = [];
+  let stateIdx = 0;
+  let refIdx = 0;
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    Fragment: 'fragment',
+    useId: () => 'id-1',
+    useState: init => {
+      const i = stateIdx++;
+      if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+      return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
+    },
+    useRef: init => {
+      const i = refIdx++;
+      if (!(i in refs)) refs[i] = { current: init };
+      return refs[i];
+    },
+    useEffect: (fn, deps) => { effects.push({ fn, deps }); },
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+  const wrapTag = name => ({ children, ...p }) => React.createElement(name, p, ...(Array.isArray(children) ? children : [children]));
+  let wrapHeight = 66.4;
+  const ctx = vm.createContext({
+    React,
+    Intl,
+    URL,
+    ResizeObserver: class MockResizeObserver {
+      constructor(cb) {
+        this.cb = cb;
+        this.observed = [];
+        this.disconnected = false;
+        resizeObservers.push(this);
+      }
+      observe(el) { this.observed.push(el); }
+      disconnect() { this.disconnected = true; }
+      trigger() { this.cb([{ target: this.observed[0] }], this); }
+    },
+    document: {
+      createElement: tag => ({ tagName: tag, dataset: {}, textContent: '', remove() {} }),
+      head: { append: node => styles.push(node) }
+    },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    __agyDashboard: {
+      dateRange: () => ({ preset: 'weeklyQuota', start: 0, end: 1, activePools: [], status: 'unstarted' }),
+      summarizeRequests: () => ({ requests: [], success: 0, errors: 0, tokens: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, priced: 0, points: [], models: [] }),
+      distributionModels: () => [],
+      subscriptionIdentity: () => ({ family: 'pro', style: 'pro', label: 'Pro' }),
+      annotateCacheAnomalies: () => new Map()
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    Uy: 'button',
+    Sy: 'tooltip',
+    dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
+    kT: wrapTag('kT'),
+    lT: wrapTag('lT'),
+    mT: wrapTag('mT'),
+    nT: wrapTag('nT'),
+    HC: wrapTag('HC'),
+    IC: wrapTag('IC'),
+    JC: wrapTag('JC'),
+    VP: wrapTag('VP'),
+    TP: wrapTag('TP'),
+    UP: wrapTag('UP'),
+    XP: wrapTag('XP')
+  });
+  vm.runInContext(panelsCode, ctx);
+  let mockDashboard = null;
+  const panels = ctx.__agyPanels({
+    t: v => v,
+    options: () => ({ enabled: true, titlebarQuickPanel: true, language: 'zh-CN', multiAccount: false }),
+    dashboard: () => mockDashboard,
+    loadDashboard: () => Promise.resolve(null),
+    subscribe: () => () => {},
+    revision: () => 0,
+    consumeRequestedTab: () => '',
+    state: () => null,
+    capabilities: () => ({ models: [] })
+  });
+
+  assert.equal(styles.length, 1);
+  const css = styles[0].textContent;
+  assert.match(css, /\.pt-header-wrap\{[^}]*position:sticky;top:0;z-index:20;/);
+  assert.match(css, /\.pt-header-wrap\[data-scrolled\]\{border-bottom-color:var\(--border\)\}/);
+  assert.match(css, /\.pt-page\[data-sticky-filter=true\] \.pt-header-wrap\[data-scrolled\]\{border-bottom-color:transparent\}/);
+  assert.match(css, /\.pt-page \.pt-filter-bar\{[^}]*position:sticky;top:calc\(var\(--pt-header-h,66px\) - 1px\);z-index:19;[^}]*backdrop-filter:blur\(8px\);/);
+  assert.match(css, /\.pt-page\[data-sticky-filter=true\]\[data-scrolled\] \.pt-filter-bar\{border-bottom-color:var\(--border\)\}/);
+  assert.doesNotMatch(css, /\[data-scrolled=true\]/);
+  assert.match(css, /\.pt-page\{[^}]*scroll-padding-top:76px;/);
+  assert.match(css, /\.pt-page\[data-sticky-filter=true\]\{scroll-padding-top:calc\(var\(--pt-header-h,66px\) \+ 64px\)\}/);
+  assert.doesNotMatch(css, /\.pt-qp[^{]*\.pt-filter-bar/);
+
+  stateIdx = 0;
+  refIdx = 0;
+  effects.length = 0;
+  const tree = panels.Page();
+  assert.equal(tree.props['data-testid'], 'agy-management-page');
+  assert.equal(tree.props.className, 'pt-page');
+  assert.equal(tree.props['data-sticky-filter'], 'true');
+  const [headerWrap, content] = tree.children;
+  assert.equal(headerWrap.props['data-testid'], 'agy-management-header');
+  assert.equal(headerWrap.props.className, 'pt-header-wrap');
+  assert.equal(content.props.className, 'pt-content');
+
+  const pageListeners = new Map();
+  const pageAttrs = new Map();
+  const cssVars = new Map();
+  const pageEl = {
+    scrollTop: 0,
+    style: {
+      setProperty: (k, v) => cssVars.set(k, v),
+      getPropertyValue: k => cssVars.get(k) || ''
+    },
+    toggleAttribute: (name, force) => {
+      if (force === undefined ? !pageAttrs.has(name) : force) pageAttrs.set(name, '');
+      else pageAttrs.delete(name);
+    },
+    hasAttribute: name => pageAttrs.has(name),
+    getAttribute: name => pageAttrs.has(name) ? pageAttrs.get(name) : null,
+    addEventListener: (type, fn) => {
+      if (!pageListeners.has(type)) pageListeners.set(type, []);
+      pageListeners.get(type).push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      const list = pageListeners.get(type) || [];
+      const idx = list.indexOf(fn);
+      if (idx >= 0) list.splice(idx, 1);
+    }
+  };
+  const wrapAttrs = new Map();
+  const headerWrapEl = {
+    getBoundingClientRect: () => ({ height: wrapHeight }),
+    toggleAttribute: (name, force) => {
+      if (force === undefined ? !wrapAttrs.has(name) : force) wrapAttrs.set(name, '');
+      else wrapAttrs.delete(name);
+    },
+    hasAttribute: name => wrapAttrs.has(name),
+    getAttribute: name => wrapAttrs.has(name) ? wrapAttrs.get(name) : null
+  };
+  tree.props.ref.current = pageEl;
+  headerWrap.props.ref.current = headerWrapEl;
+
+  const cleanups = effects.map(e => e.fn()).filter(fn => typeof fn === 'function');
+  assert.equal(pageListeners.get('scroll')?.length, 1);
+  assert.equal(resizeObservers.length, 1);
+  assert.deepEqual(resizeObservers[0].observed, [headerWrapEl]);
+  assert.equal(cssVars.get('--pt-header-h'), '66px');
+  assert.equal(pageEl.hasAttribute('data-scrolled'), false);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), false);
+
+  // ResizeObserver updates --pt-header-h when header wraps at narrow widths
+  wrapHeight = 104.2;
+  resizeObservers[0].trigger();
+  assert.equal(cssVars.get('--pt-header-h'), '104px');
+
+  pageEl.scrollTop = 48;
+  for (const fn of pageListeners.get('scroll')) fn();
+  assert.equal(pageEl.hasAttribute('data-scrolled'), true);
+  assert.equal(pageEl.getAttribute('data-scrolled'), '');
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), true);
+  assert.equal(headerWrapEl.getAttribute('data-scrolled'), '');
+
+  pageEl.scrollTop = 2;
+  for (const fn of pageListeners.get('scroll')) fn();
+  assert.equal(pageEl.hasAttribute('data-scrolled'), false);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), false);
+
+  // Switching tabs resets scrollTop and clears data-scrolled on both page and headerWrap
+  pageEl.scrollTop = 120;
+  for (const fn of pageListeners.get('scroll')) fn();
+  assert.equal(pageEl.hasAttribute('data-scrolled'), true);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), true);
+  const headerNode = headerWrap.children[0];
+  const toolbarNode = headerNode.children[1];
+  const tabsComp = toolbarNode.children[0];
+  const tabsTree = tabsComp.type(tabsComp.props);
+  const requestsBtn = tabsTree.children.find(c => c.props?.['data-testid'] === 'agy-tab-requests');
+  assert.ok(requestsBtn);
+  requestsBtn.props.onClick();
+  assert.equal(states[0], 'requests');
+  assert.equal(pageEl.scrollTop, 0);
+  assert.equal(pageEl.hasAttribute('data-scrolled'), false);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), false);
+
+  // Switching to settings clears data-sticky-filter; overview/requests/errors keep it and render .pt-filter-bar
+  mockDashboard = { requests: [], errors: [], activeAccountEmail: '' };
+  const findByTestId = (node, tid) => {
+    if (!node || typeof node !== 'object') return null;
+    if (node.props?.['data-testid'] === tid) return node;
+    for (const child of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findByTestId(child, tid);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const renderTab = tabName => {
+    states[0] = tabName;
+    stateIdx = 0;
+    refIdx = 0;
+    return panels.Page();
+  };
+  const reqPage = renderTab('requests');
+  assert.equal(reqPage.props['data-sticky-filter'], 'true');
+  const reqComp = reqPage.children[1].children[1].children[0];
+  stateIdx = 10;
+  const reqTree = reqComp.type(reqComp.props);
+  assert.match(findByTestId(reqTree, 'agy-requests-filter-bar')?.props?.className || '', /\bpt-filter-bar\b/);
+
+  const errPage = renderTab('errors');
+  assert.equal(errPage.props['data-sticky-filter'], 'true');
+  const errComp = errPage.children[1].children[1].children[0];
+  stateIdx = 20;
+  const errTree = errComp.type(errComp.props);
+  assert.match(findByTestId(errTree, 'agy-errors-filter-bar')?.props?.className || '', /\bpt-filter-bar\b/);
+
+  const ovPage = renderTab('overview');
+  assert.equal(ovPage.props['data-sticky-filter'], 'true');
+  const ovComp = ovPage.children[1].children[1].children[0];
+  stateIdx = 30;
+  const ovTree = ovComp.type(ovComp.props);
+  assert.match(findByTestId(ovTree, 'agy-overview-filter-bar')?.props?.className || '', /\bpt-filter-bar\b/);
+
+  const settingsPage = renderTab('settings');
+  assert.equal(settingsPage.props['data-sticky-filter'], undefined);
+
+  // QuickPopover uses .pt-qp / .pt-qp-scroll rather than .pt-page, keeping sticky filter bars scoped to .pt-page only
+  stateIdx = 50;
+  refIdx = 50;
+  let qpTree = panels.QuickPopover();
+  qpTree.children[0].props.onOpenChange(true);
+  stateIdx = 50;
+  refIdx = 50;
+  qpTree = panels.QuickPopover();
+  const qpCard = qpTree.children[0].children[1].children[0];
+  assert.equal(qpCard.props.className, 'pt-qp');
+  assert.equal(qpCard.props['data-sticky-filter'], undefined);
+  assert.equal(qpCard.children[1].props['data-testid'], 'agy-quick-body');
+  assert.equal(qpCard.children[1].props.className, 'pt-qp-scroll');
+  assert.equal(findByTestId(qpTree, 'agy-management-page'), null);
+
+  for (const cleanup of cleanups) cleanup();
+  assert.equal(pageListeners.get('scroll')?.length, 0);
+  assert.equal(resizeObservers[0].disconnected, true);
+  panels.dispose();
+});
+
+test('state polling passes knownRev and short-circuits unchanged replies, conversation switch avoids .pt-outline flash, and running turn cancels stranded inline edit (Issues #62, #74, #70)', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-a';
+  const intervals = [];
+  const timeouts = [];
+  let fakeNow = 1_795_900_000_000;
+  p.context.Date = class extends Date { static now() { return fakeNow; } };
+  p.context.setInterval = (fn, ms) => { const entry = { fn, ms, cleared: false }; intervals.push(entry); return intervals.length; };
+  p.context.clearInterval = id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; };
+  p.context.setTimeout = (fn, ms) => { const entry = { fn, ms, cleared: false }; timeouts.push(entry); return timeouts.length; };
+  p.context.clearTimeout = id => { if (timeouts[id - 1]) timeouts[id - 1].cleared = true; };
+
+  let outlineRenders = 0;
+  let hasNativeNav = false;
+  const overviewEl = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const viewEl = {
+    isConnected: true,
+    children: [],
+    insertBefore(n) { n.isConnected = true; this.children.push(n); },
+    querySelector: sel => (sel === '[data-testid="conversation-navigator"]' && hasNativeNav ? { isConnected: true } : null)
+  };
+  p.document.querySelector = sel => {
+    if (sel === '[data-testid="overview-panel"]') return overviewEl;
+    if (sel === '[data-testid="conversation-view"]') return viewEl;
+    return null;
+  };
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render() { if (mount.dataset?.agyPowertoolsRoot === 'outline') outlineRenders++; },
+        unmount() {}
+      };
+    }
+  };
+  let capturedEnv = null;
+  p.context.__agyPanels = env => {
+    capturedEnv = env;
+    return { Page: () => null, Sidebar: () => null, Outline: () => null, Progress: () => null, dispose() {} };
+  };
+  p.context.__agyNativeAdapter.installPage = () => true;
+
+  let execState = { conversationId: 'conv-a', status: 1 };
+  const cancelEditOpts = [];
+  let pendingEditObj = { cascadeId: 'conv-a', submitting: false };
+  Object.defineProperty(p.context.__agyNativeAdapter, 'pendingEdit', { get: () => pendingEditObj, configurable: true });
+  p.context.__agyNativeAdapter.cancelEdit = opts => { cancelEditOpts.push(opts); pendingEditObj = null; };
+  p.context.__agyNativeAdapter.executionState = () => execState;
+
+  const stateReqs = [];
+  const resetReqs = [];
+  let revA = 11;
+  let serverSettings = { enabled: true, keepTurnOutline: true, language: 'zh-CN' };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, serverSettings);
+      else if (req.method === 'settings.reset') {
+        resetReqs.push(req);
+        serverSettings = { enabled: true, keepTurnOutline: true, language: 'en' };
+        p.context.__agyPowertoolsReceive(req.id, serverSettings);
+      }
+      else if (req.method === 'state') {
+        stateReqs.push(req);
+        if (req.conversationId === 'conv-a' && req.knownRev === revA) {
+          p.context.__agyPowertoolsReceive(req.id, { unchanged: true, conversationId: 'conv-a', stateRev: revA });
+        } else {
+          p.context.__agyPowertoolsReceive(req.id, {
+            conversationId: req.conversationId,
+            stateRev: req.conversationId === 'conv-a' ? revA : 22,
+            settings: serverSettings,
+            turns: [{ turnNumber: 1, status: 'complete' }, { turnNumber: 2, status: 'complete' }],
+            contextWindow: {},
+            telemetry: {},
+            requests: []
+          });
+        }
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, {});
+      }
+    });
+  };
+  p.context.__agyDefaultSettings = { language: 'en' };
+  p.context.__agyInitialSettings = { enabled: true, keepTurnOutline: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  // 1. Issue #62: second poll sends knownRev: 11 and cleanly handles { unchanged: true }
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(stateReqs.at(-1).knownRev, 11);
+
+  // 1b. Settings-only revision bump (same stateValueSig!) MUST still advance state.stateRev so next poll sends knownRev: 12
+  revA = 12;
+  serverSettings = { ...serverSettings, compact: false };
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(stateReqs.at(-1).knownRev, 12, 'settings-only state reply must still advance state.stateRev');
+
+  // 1c. Restore defaults calls backend settings.reset and keeps backend OS default language ('en') instead of hardcoded 'zh-CN'
+  assert.equal(capturedEnv.defaults.language, 'en');
+  await capturedEnv.resetSettings();
+  assert.equal(resetReqs.length, 1);
+  assert.equal(capturedEnv.options().language, 'en');
+
+  // 2. Issue #70: when conv-a enters running state while an unsubmitted pendingEdit is open,
+  // cancelEdit restores composer home AND preserves pre-edit draft/attachments (restoreDraft: true)
+  execState = { conversationId: 'conv-a', status: 2 };
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(cancelEditOpts.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(cancelEditOpts[0])), { restoreDraft: true });
+
+  // 3. Issue #74: switching from conv-a -> conv-b suppresses fallback .pt-outline during the 220ms grace window;
+  // when native conversation-navigator mounts within that window, fallback outline is never mounted!
+  const rendersBeforeSwitch = outlineRenders;
+  execState = { conversationId: 'conv-b', status: 1 };
+  p.context.location.pathname = '/c/conv-b';
+  fakeNow += 1000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(outlineRenders, rendersBeforeSwitch, 'must not flash fallback .pt-outline immediately on conversation switch');
+  hasNativeNav = true;
+  fakeNow += 300;
+  const graceTimer = timeouts.find(t => t.ms === 230 && !t.cleared);
+  if (graceTimer) graceTimer.fn();
+  const mountDebounce = timeouts.at(-1);
+  if (mountDebounce && !mountDebounce.cleared) mountDebounce.fn();
+  assert.equal(outlineRenders, rendersBeforeSwitch, 'native conversation-navigator appeared so fallback outline must stay unmounted');
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('composer popover buttons retain accessible names without hover tips', () => {
+  for (const id of ['agy-context-ring-trigger', 'agy-subagent-context-ring-trigger', 'agy-speed-stats-trigger']) {
+    const index = source.indexOf(`'data-testid': '${id}'`);
+    assert.notEqual(index, -1);
+    const props = source.slice(source.lastIndexOf('h(Uy, {', index), source.indexOf('}, h(', index));
+    assert.match(props, /'aria-label': t\('[^']+'\)/);
+    assert.doesNotMatch(props, /data-pt-tip/);
+  }
 });

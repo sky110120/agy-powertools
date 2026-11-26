@@ -11,6 +11,9 @@ import {runUpdateJob,updateStatus,startUpdate} from '../lib/update-manager.mjs';
 import {serveRuntime,stopRuntimes,waitForRuntime,runtimeRecords} from '../lib/runtime-control.mjs';
 
 const original=collectPackage(resolve('.')),stop=async()=>{};
+test('发布包排除本地字体验证记录和效果图目录', () => {
+  assert.ok(!original.files.some(file => file.path.startsWith('docs/local-font/') || file.path.startsWith('docs/images/')));
+});
 function variant(version){const copy=structuredClone(original);copy.version=version;for(const file of copy.files){
   let text=Buffer.from(file.data,'base64').toString('utf8');
   if(['package.json','plugin.json','package-lock.json'].includes(file.path)){const value=JSON.parse(text);value.version=version;if(value.packages?.[''])value.packages[''].version=version;text=JSON.stringify(value);}
@@ -217,4 +220,10 @@ test('package excludes docs/images screenshots, bootstrap copies all worker impo
     await close?.();
     s.clean();
   }
+});
+
+test('release includes locale modules and omits localized repository guides', () => {
+  const names = new Set(original.files.map(file=>file.path));
+  for (const lang of ['index','fr','ja','ko','de','es','ru']) assert.ok(names.has(`lib/locales/${lang}.mjs`));
+  assert.ok(![...names].some(name=>/^docs\/README_/.test(name)));
 });
