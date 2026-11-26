@@ -694,3 +694,162 @@ test('stable sendUserCascadeMessage wrapper preserves edit revert even when comp
     ['send', 'conv-stable']
   ]);
 });
+
+test('inline edit capture-phase Enter and Send click revert and resend directly even when sendUserCascadeMessage was never hooked, and authService exposes loginSession helpers (Issues #58 & #56)', async () => {
+  const events = [];
+  const hostListeners = new Map();
+  let editorText = 'edited initial prompt';
+  const editor = {
+    getEditorState: () => ({ toJSON: () => ({ root: { type: 'root', children: [{ type: 'paragraph', children: [{ text: editorText }] }] } }) }),
+    setEditorState() {},
+    focus() {}
+  };
+  const box = { lexicalRef: { current: editor }, getMediaAttachments: () => [], setMediaAttachments() {} };
+  const inputBox = { parentNode: null, nextSibling: null, querySelector: () => null };
+  const bottomDock = {
+    isConnected: true,
+    children: [inputBox],
+    insertBefore(node) { node.parentNode = bottomDock; node.parentElement = bottomDock; }
+  };
+  inputBox.parentNode = bottomDock;
+  inputBox.parentElement = bottomDock;
+  let removedHost = false;
+  let removedAttr = '';
+  const service = {
+    forkConversation() {},
+    async cancelCascadeInvocation(args) { events.push(['cancel', args.cascadeId]); },
+    async sendUserCascadeMessage() { events.push(['raw-unwrapped-send']); }
+  };
+  const stepHandler = {
+    async revertToIndex(id, idx, opts) { events.push(['revert', id, idx, opts]); }
+  };
+  const sendMessage = async payload => {
+    events.push(['sendMessage', payload.cascadeId, payload.items?.[0]?.chunk?.value || payload.items?.[0]?.item?.value || '', payload.resend]);
+  };
+  let loginSnap = { active: true, authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test', mode: 'redirect' };
+  const loginSubs = [];
+  let cancelledLogin = 0;
+  const authSvc = {
+    login() { return Promise.resolve(); },
+    getLoginSessionSnapshot: () => loginSnap,
+    onDidChangeLoginSession: cb => { loginSubs.push(cb); return { dispose() {} }; },
+    cancelLogin: () => { cancelledLogin++; }
+  };
+  const message = {
+    cascadeId: 'conv-initial-58',
+    metadata: { index: 2 },
+    step: { items: [{ chunk: { case: 'text', value: 'original prompt' } }], media: [], artifactComments: [], fileDiffComments: [], fileComments: [] }
+  };
+  const element = {
+    isConnected: true,
+    children: [],
+    setAttribute() {},
+    removeAttribute(name) { removedAttr = name; },
+    prepend(node) { this.children.unshift(node); },
+    closest: () => ({ querySelector: () => inputBox }),
+    '__reactFiber$initial': {
+      tag: 0,
+      memoizedProps: message,
+      return: {
+        tag: 10, type: {}, memoizedProps: { value: { stepHandler, sendMessage } },
+        return: {
+          tag: 10, type: {}, memoizedProps: { value: { inputBoxRef: { current: box }, getLexicalEditor: () => editor } },
+          return: {
+            tag: 10, type: {}, memoizedProps: { value: service },
+            return: { tag: 10, type: {}, memoizedProps: { value: { core: { authService: authSvc } } }, return: null }
+          }
+        }
+      }
+    }
+  };
+  const makeNode = () => ({
+    dataset: {},
+    className: '',
+    textContent: '',
+    append(...children) {
+      for (const c of children) {
+        if (c === inputBox) { c.parentNode = this; c.parentElement = this; }
+      }
+    },
+    addEventListener(type, fn, capture) {
+      if (this.dataset.testid === 'agy-inline-edit-host') {
+        hostListeners.set(`${type}:${Boolean(capture)}`, fn);
+      }
+    },
+    remove() { if (this.dataset.testid === 'agy-inline-edit-host') removedHost = true; }
+  });
+  const context = vm.createContext({
+    document: {
+      querySelector: sel => (sel.includes('conversation-view') || sel.includes('customizations') ? element : null),
+      createElement: makeNode
+    },
+    HU: m => m.index,
+    LN: items => JSON.stringify({ root: { items } }),
+    IJ: (_, json) => JSON.parse(json),
+    I: { CascadeConfigSchema: {} },
+    tc: (_, v) => structuredClone(v),
+    Wb: (_, v) => v
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  // Verify Issue #56 authService login session helpers
+  assert.deepEqual({ ...adapter.loginSession() }, loginSnap);
+  const seenSnaps = [];
+  const disposeSub = adapter.onLoginSessionChange(s => seenSnaps.push(s));
+  loginSubs[0]({ active: true, authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=2', mode: 'redirect' });
+  assert.equal(seenSnaps.length, 1);
+  assert.equal(seenSnaps[0].authUrl, 'https://accounts.google.com/o/oauth2/v2/auth?state=2');
+  disposeSub();
+  adapter.cancelAccountLogin();
+  assert.equal(cancelledLogin, 1);
+
+  // Verify Issue #58: capture-phase Enter submits via revertToIndex + chatCtx.sendMessage and restores composer home
+  await adapter.beginEdit(element);
+  assert.ok(adapter.pendingEdit);
+  const onKeyDown = hostListeners.get('keydown:true');
+  assert.ok(onKeyDown);
+  let prevented = false, stopped = false;
+  onKeyDown({
+    key: 'Enter',
+    target: { closest: sel => sel === '[contenteditable="true"]' ? {} : null },
+    preventDefault() { prevented = true; },
+    stopPropagation() { stopped = true; },
+    stopImmediatePropagation() { stopped = true; }
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(adapter.pendingEdit, null);
+  assert.equal(removedHost, true);
+  assert.equal(removedAttr, 'data-agy-editing-target');
+  assert.equal(inputBox.parentNode, bottomDock);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['cancel', 'conv-initial-58'],
+    ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
+    ['sendMessage', 'conv-initial-58', 'edited initial prompt', 'edit']
+  ]);
+
+  // Also verify capture-phase click on Send button works identically
+  events.length = 0;
+  editorText = 'second click edit';
+  await adapter.beginEdit(element);
+  const onClick = hostListeners.get('click:true');
+  assert.ok(onClick);
+  const sendBtn = { disabled: false };
+  onClick({
+    target: { closest: sel => sel.includes('send-button') ? sendBtn : null },
+    preventDefault() {},
+    stopPropagation() {},
+    stopImmediatePropagation() {}
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(adapter.pendingEdit, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['cancel', 'conv-initial-58'],
+    ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
+    ['sendMessage', 'conv-initial-58', 'second click edit', 'edit']
+  ]);
+});

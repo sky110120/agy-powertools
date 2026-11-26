@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -212,14 +212,16 @@ test('executable discovery, post-update prompt guards, and relaunch scheduling p
     assert.equal(spawned[0].opts.env.AGY_RELAUNCH_TARGET, exe);
     assert.ok(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT.endsWith('relaunch-antigravity.ps1'));
     assert.ok(existsSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT));
-    assert.equal(spawned[0].opts.detached, undefined);
-    assert.ok(spawned[0].args.includes('-EncodedCommand'));
-    const encodedIdx = spawned[0].args.indexOf('-EncodedCommand');
-    const decodedLauncher = Buffer.from(spawned[0].args[encodedIdx + 1], 'base64').toString('utf16le');
-    assert.ok(decodedLauncher.includes('FindWindowSW'));
-    assert.ok(decodedLauncher.includes('ShellExecute'));
-    assert.ok(decodedLauncher.includes('CreateProcessW'));
+    assert.equal(spawned[0].args.includes('-EncodedCommand'), false);
+    if (res.launchMethod === 'explorer-lnk') {
+      assert.match(spawned[0].cmd, /explorer\.exe$/i);
+      assert.ok(spawned[0].args[0].endsWith('relaunch-antigravity.lnk'));
+    } else {
+      assert.ok(spawned[0].args.includes('-File'));
+    }
     const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.equal(psBody.includes('FindWindowSW'), false);
+    assert.equal(psBody.includes('CreateProcessW'), false);
     assert.ok(psBody.includes('Start-Sleep -Milliseconds 350'));
     assert.ok(psBody.includes('--remote-debugging-port=0'));
     assert.ok(psBody.includes('Remove-Item -LiteralPath $PSCommandPath'));
@@ -630,8 +632,8 @@ test('scheduleRelaunchWithDebugPort reads saved proxy settings across platforms 
     assert.ok(psBody.includes("$env:HTTPS_PROXY = 'socks5h://127.0.0.1:7897'"));
     assert.ok(psBody.includes("$env:NO_PROXY = 'localhost,127.0.0.1,::1,192.168.0.0/16'"));
     assert.ok(psBody.includes("$env:GODEBUG = 'http2client=0'"));
-    assert.ok(psBody.includes("'--proxy-server=socks5://127.0.0.1:7897'"));
-    assert.ok(psBody.includes("'--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16'"));
+    assert.ok(psBody.includes('"--proxy-server=socks5://127.0.0.1:7897"'));
+    assert.ok(psBody.includes('"--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16"'));
 
     // macOS: injects env + --env flags + Chromium proxy args and clears helper vars
     const macApp = join(root, 'Antigravity.app');
@@ -924,6 +926,198 @@ test('maybeAutoRelaunchProxy automatically relaunches once on cold start when no
     });
     assert.equal(rReset.relaunched, true);
     assert.equal(relaunchedCount, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('relaunch scripts escalate lingering POSIX processes to SIGKILL, resolve Linux symlinks, and preserve user system proxy env when plugin proxy is off', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-relaunch-harden-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ proxyEnabled: false }));
+
+    // 1. Linux: symlink target resolves realpath, targets main Electron PID before helpers, escalates to SIGKILL, and guards proxy unset
+    const realExe = join(root, 'opt-antigravity');
+    const symExe = join(root, 'bin-antigravity');
+    writeFileSync(realExe, '');
+    if (process.platform !== 'win32') symlinkSync(realExe, symExe);
+    const linSpawned = [];
+    const linRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'linux',
+      env: { APPIMAGE: process.platform !== 'win32' ? symExe : realExe },
+      spawnProcess(cmd, args, opts) { linSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(linRes.scheduled, true);
+    assert.equal(linSpawned[0].opts.env.AGY_RELAUNCH_REAL, realpathSync(realExe));
+    const linScript = linSpawned[0].args[1];
+    assert.ok(linScript.includes('index($0, " --type=") == 0 && index($0, " --import=") == 0'));
+    assert.ok(linScript.includes('kill -KILL $rem_pids'));
+    assert.ok(linScript.includes('if [ -n "$AGY_POWERTOOLS_PROXY_SPEC" ]; then unset HTTP_PROXY'));
+    assert.ok(linScript.includes('unset AGY_RELAUNCH_TARGET AGY_RELAUNCH_REAL'));
+    if (process.platform !== 'win32') {
+      assert.equal(spawnSync('sh', ['-n', '-c', linScript], { encoding: 'utf8' }).status, 0);
+    }
+
+    // 2. macOS: escalates lingering processes to SIGKILL and guards proxy unset behind AGY_POWERTOOLS_PROXY_SPEC
+    const macApp = join(root, 'Antigravity.app');
+    mkdirSync(join(macApp, 'Contents', 'Resources', 'bin'), { recursive: true });
+    const macLs = join(macApp, 'Contents', 'Resources', 'bin', 'language_server');
+    writeFileSync(macLs, '');
+    const macSpawned = [];
+    scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'darwin',
+      env: { ANTIGRAVITY_AGENTAPI_EXE: macLs },
+      spawnProcess(cmd, args, opts) { macSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    const macScript = macSpawned[0].args[1];
+    assert.ok(macScript.includes('kill -KILL $pids'));
+    assert.ok(macScript.includes('if [ -n "$AGY_POWERTOOLS_PROXY_SPEC" ]; then unset HTTP_PROXY'));
+    if (process.platform !== 'win32') {
+      assert.equal(spawnSync('sh', ['-n', '-c', macScript], { encoding: 'utf8' }).status, 0);
+    }
+
+    // 3. Windows: guards Remove-Item Env:HTTP_PROXY behind $env:AGY_POWERTOOLS_PROXY_SPEC
+    const winExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
+    mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
+    writeFileSync(winExe, '');
+    const winSpawned = [];
+    scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      spawnProcess(cmd, args, opts) { winSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    const psBody = readFileSync(winSpawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes('if ($env:AGY_POWERTOOLS_PROXY_SPEC) {'));
+    assert.ok(psBody.includes('Remove-Item Env:HTTP_PROXY'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows relaunch uses zero-AMSI Explorer .lnk (no -EncodedCommand/DCOM/VBS), verifies proxy args, syncs onboarding app_storage.json post-exit, and parses cleanly in PowerShell 5.1 (Issues #53 & #59)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-win-relaunch-53-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+      proxyEnabled: true,
+      proxyUrl: 'http://127.0.0.1:7897',
+      proxyBypass: '192.168.0.0/16',
+      proxyForceHttp1: false
+    }));
+    const winExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
+    mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
+    writeFileSync(winExe, '');
+    const appStoragePath = join(root, 'AppData', 'Roaming', 'Antigravity', 'app_storage.json');
+    mkdirSync(join(root, 'AppData', 'Roaming', 'Antigravity'), { recursive: true });
+    writeFileSync(appStoragePath, JSON.stringify({ 'agy.onboarding.lastLoginUsername': 'old@example.com', 'agy.onboarding.lastLoginIsGcpTos': 'false' }));
+
+    const spawned = [];
+    const helperCalls = [];
+    const res = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      onboardingSync: { email: 'bob@example.com', isGcpTos: true },
+      appStoragePath,
+      runPowerShellFile(exe, args, opts) {
+        helperCalls.push({ exe, args, opts });
+        writeFileSync(opts.env.AGY_RELAUNCH_LNK, 'LNK');
+        return { status: 0, stdout: '', stderr: '' };
+      },
+      spawnProcess(cmd, args, opts) { spawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(res.scheduled, true);
+    assert.equal(res.proxyActive, true);
+    assert.equal(res.launchMethod, 'explorer-lnk');
+    assert.ok(res.scriptPath);
+    assert.equal(helperCalls.length, 1);
+    assert.ok(helperCalls[0].args.includes('-File'));
+    assert.equal(helperCalls[0].args.includes('-EncodedCommand'), false);
+    assert.match(spawned[0].cmd, /explorer\.exe$/i);
+    assert.ok(spawned[0].args[0].endsWith('relaunch-antigravity.lnk'));
+
+    const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    // Zero Defender AMSI / Huorong triggers
+    assert.equal(psBody.includes('9BA05972-F6A8-11CF-A442-00A0C90A8F39'), false);
+    assert.equal(psBody.includes('CreateProcessW'), false);
+    assert.equal(psBody.includes('WScript.Shell'), false);
+    // Verifies startup ack, env cleanup, proxy arg verification, onboarding sync, and self-cleanup of .lnk/.ack/.ps1
+    assert.ok(psBody.includes("Set-Content -LiteralPath $ackPath -Value ('STARTED ' + $PID)"));
+    assert.ok(psBody.includes('Remove-Item Env:ELECTRON_RUN_AS_NODE,Env:NODE_OPTIONS,Env:ANTIGRAVITY_LS_ADDRESS'));
+    assert.ok(psBody.includes("-ArgumentList $argLine -WorkingDirectory $targetDir"));
+    assert.ok(psBody.includes("CommandLine.Contains('--proxy-server=')"));
+    assert.ok(psBody.includes("agy.onboarding.lastLoginUsername"));
+    assert.ok(psBody.includes("'bob@example.com'"));
+    assert.ok(psBody.includes("agy.onboarding.lastLoginIsGcpTos"));
+    assert.ok(psBody.includes("'true'"));
+    assert.ok(psBody.includes("Remove-Item -LiteralPath $lnkPath -Force"));
+
+    // Fallback when .lnk creation fails uses plain powershell.exe -File (never -EncodedCommand)
+    const fallbackSpawned = [];
+    const fallbackRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      runPowerShellFile: () => ({ status: 1, stdout: '', stderr: 'denied' }),
+      spawnProcess(cmd, args, opts) { fallbackSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(fallbackRes.launchMethod, 'powershell-file');
+    assert.match(fallbackSpawned[0].cmd, /powershell\.exe$/i);
+    assert.ok(fallbackSpawned[0].args.includes('-File'));
+    assert.equal(fallbackSpawned[0].args.includes('-EncodedCommand'), false);
+
+    // POSIX macOS/Linux relaunch also injects post-exit onboarding sync safely via env vars
+    const linExe = join(root, 'antigravity-lin');
+    writeFileSync(linExe, '');
+    const linSpawned = [];
+    scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'linux',
+      env: { APPIMAGE: linExe },
+      onboardingSync: { email: 'bob@example.com', isGcpTos: false },
+      appStoragePath: join(root, 'lin_storage.json'),
+      spawnProcess(cmd, args, opts) { linSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(linSpawned[0].opts.env.AGY_ONBOARDING_EMAIL, 'bob@example.com');
+    assert.equal(linSpawned[0].opts.env.AGY_ONBOARDING_GCP_TOS, 'false');
+    assert.ok(linSpawned[0].args[1].includes('agy.onboarding.lastLoginUsername'));
+    if (process.platform !== 'win32') {
+      assert.equal(spawnSync('sh', ['-n', '-c', linSpawned[0].args[1]], { encoding: 'utf8' }).status, 0);
+    }
+
+    if (process.platform === 'win32') {
+      // Real PowerShell 5.1 AST parse check AND real .lnk creation check on Windows
+      const probe = "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:AGY_PS_CHECK, [ref]$null, [ref]$e); if ($e -and $e.Count -gt 0) { $e | ForEach-Object { Write-Error $_.Message }; exit 1 }";
+      const out = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', probe], {
+        encoding: 'utf8',
+        env: { ...process.env, AGY_PS_CHECK: psBody.replace(/^\uFEFF/, '') }
+      });
+      assert.equal(out.status, 0, `PowerShell 5.1 parse error: ${out.stderr}`);
+
+      const realSpawned = [];
+      const realRes = scheduleRelaunchWithDebugPort({
+        dataDir: join(root, 'real-lnk'),
+        home: root,
+        platform: 'win32',
+        env: { ...process.env, LOCALAPPDATA: join(root, 'AppData', 'Local') },
+        spawnProcess(cmd, args, opts) { realSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+      });
+      assert.equal(realRes.launchMethod, 'explorer-lnk');
+      assert.match(realSpawned[0].cmd, /explorer\.exe$/i);
+      assert.equal(existsSync(realSpawned[0].args[0]), true);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

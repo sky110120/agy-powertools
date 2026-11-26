@@ -1704,23 +1704,464 @@ test('auto-switch waits for background running tabs and interactive banner suppo
     return null;
   };
   const select = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-select');
+  const menu = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-menu');
+  const optC = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-option-acct-c');
   const pauseBtn = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-pause');
   const nowBtn = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-now');
-  assert.ok(select && pauseBtn && nowBtn);
+  assert.ok(select && menu && optC && pauseBtn && nowBtn);
+  assert.equal(select.tagName, 'BUTTON', 'auto-switch banner must use custom Antigravity dropdown rather than native <select>');
+  assert.equal(walk(banner, n => n.tagName === 'SELECT'), null);
 
-  // Swap target to candB and pause countdown
-  select.value = 'acct-c';
-  for (const fn of select.listeners.get('change') || []) fn();
+  // Open custom picker, select candB (acct-c), and pause countdown
+  for (const fn of select.listeners.get('click') || []) fn({ stopPropagation() {} });
+  for (const fn of optC.listeners.get('click') || []) fn({ stopPropagation() {} });
   for (const fn of pauseBtn.listeners.get('click') || []) fn();
   const countdownTick = intervals.find(i => i.ms === 1000 && !i.cleared);
   for (let i = 0; i < 10; i++) countdownTick.fn();
   assert.equal(switchedCalls.length, 0, 'paused countdown must not switch');
 
-  // Click Switch Now -> switches immediately to overridden target 'acct-c'
+  // Click Switch Now while another background tab starts running -> defers while preserving depletedGroupKey ('claude')
+  runningIds = ['bg-conv-2'];
   for (const fn of nowBtn.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 0);
+
+  // Once background tab finishes, deferred resume re-queries candidates with preserved group key and lets us switch
+  runningIds = [];
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const banner2 = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner2, 'deferred banner must reappear once background tasks finish');
+  const optC2 = walk(banner2, n => n.dataset?.testid === 'agy-autoswitch-target-option-acct-c');
+  const nowBtn2 = walk(banner2, n => n.dataset?.testid === 'agy-autoswitch-now');
+  for (const fn of optC2.listeners.get('click') || []) fn({ stopPropagation() {} });
+  for (const fn of nowBtn2.listeners.get('click') || []) fn();
   await new Promise(r => setImmediate(r));
   assert.equal(switchedCalls.length, 1);
   assert.equal(switchedCalls[0].accountId, 'acct-c');
+
+  ctx.__agyPowertools.dispose();
+});
+
+test('native-ui auto-switch resets switchingInProgress when relaunching is false without manualRestartRequired and preserves depletedGroupKey on deferral', async () => {
+  const source = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
+  const intervals = [];
+  const candidateGroupKeys = [];
+  const switchedCalls = [];
+  let runningIds = [];
+  let switchReply = { ok: true, unchanged: true, relaunching: false, manualRestartRequired: false };
+  const makeEl = tag => ({
+    tagName: String(tag || 'div').toUpperCase(),
+    dataset: {},
+    style: {},
+    className: '',
+    textContent: '',
+    children: [],
+    listeners: new Map(),
+    isConnected: true,
+    append(...items) { this.children.push(...items); },
+    appendChild(item) { this.children.push(item); return item; },
+    remove() { this.isConnected = false; },
+    contains() { return false; },
+    setAttribute() {},
+    getAttribute() { return null; },
+    removeAttribute() {},
+    addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+  const body = makeEl('body');
+  const candA = { id: 'acct-b', email: 'b@example.com', alias: '备用号B' };
+  let capturedEnv = null;
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      head: makeEl('head'),
+      body,
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: tag => makeEl(tag),
+      addEventListener() {},
+      removeEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/c/active-conv' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyPanels: env => { capturedEnv = env; return { dispose() {} }; },
+    __agyInitialSettings: { enabled: true, multiAccount: true, autoSwitchAccount: true },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'active-conv', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({ email: 'a@example.com', model: 'Claude Opus 5.5', models: [{ modelId: 'Claude Opus 5.5' }] }),
+      service: () => ({
+        retrieveUserQuotaSummary: async () => ({
+          response: { groups: [{ displayName: 'Claude and GPT models', buckets: [{ bucketId: '3p-5h', remainingFraction: 0, resetTimeMs: Date.now() + 3600_000 }] }] }
+        })
+      }),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { enabled: true, multiAccount: true, autoSwitchAccount: true });
+      else if (msg.method === 'accounts.list' || msg.method === 'accounts.syncActive') {
+        ctx.__agyPowertoolsReceive(msg.id, { activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'a@example.com' }, candA] });
+      } else if (msg.method === 'accounts.autoSwitchCandidate') {
+        candidateGroupKeys.push(msg.depletedGroupKey);
+        ctx.__agyPowertoolsReceive(msg.id, { candidate: candA, candidates: [candA], cooldownRemainingMs: 0 });
+      } else if (msg.method === 'accounts.switch') {
+        switchedCalls.push(msg);
+        ctx.__agyPowertoolsReceive(msg.id, switchReply);
+      } else if (msg.method === 'accounts.refreshLocalQuotas') {
+        ctx.__agyPowertoolsReceive(msg.id, { ok: true, activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'a@example.com' }, candA] });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: () => 1,
+    clearTimeout: () => {}
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.ok(capturedEnv);
+
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  const banner1 = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner1);
+  assert.equal(candidateGroupKeys.at(-1), 'claude');
+
+  // 1. Trigger Switch Now while runningIds becomes non-empty -> defers preserving 'claude'
+  runningIds = ['bg-1'];
+  const now1 = walk(banner1, n => n.dataset?.testid === 'agy-autoswitch-now');
+  for (const fn of now1.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 0);
+
+  // 2. Resume after background task ends -> must pass 'claude' (NOT '') to accounts.autoSwitchCandidate!
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(candidateGroupKeys.at(-1), 'claude', 'deferred auto-switch must preserve depletedGroupKey');
+
+  // 3. Switch returns unchanged / relaunching: false without manualRestartRequired -> MUST NOT wedge switchingInProgress!
+  const banner2 = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner2);
+  const now2 = walk(banner2, n => n.dataset?.testid === 'agy-autoswitch-now');
+  for (const fn of now2.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 1);
+
+  // Prove switchingInProgress was cleanly reset: refreshAccountQuotas succeeds instead of skipping!
+  const postRefresh = await capturedEnv.refreshAccountQuotas();
+  assert.equal(postRefresh.ok, true);
+  assert.notEqual(postRefresh.skipped, true);
+  ctx.__agyPowertools.dispose();
+});
+
+test('long-conversation polling skips ring re-renders, completed response fiber walks, and unchanged refresh mounts (Issue #51)', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-long-51';
+  const intervals = [];
+  let fakeNow = 1_795_700_000_000;
+  p.context.Date = class extends Date { static now() { return fakeNow; } };
+  p.context.setInterval = (fn, ms) => { const entry = { fn, ms }; intervals.push(entry); return intervals.length; };
+  p.context.clearInterval = () => {};
+
+  let ringRenders = 0;
+  let fiberWalks = 0;
+  const card = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const flexParent = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const model = {
+    isConnected: true,
+    textContent: 'Gemini 4 Carbon',
+    parentElement: flexParent,
+    nextSibling: null,
+    closest: sel => sel === '.surface-composer-card' ? card : null
+  };
+  const actionRow = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const copyBtn = { parentElement: actionRow, closest: () => null };
+  const scopeEl = { querySelector: sel => sel === '[aria-label="Bad response"]' ? copyBtn : null, querySelectorAll: () => [] };
+  const responseEl = {
+    isConnected: true,
+    firstChild: null,
+    children: [],
+    insertBefore(n) { n.isConnected = true; this.children.unshift(n); },
+    closest: sel => sel === '[data-turn-content]' ? scopeEl : null,
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  p.document.querySelectorAll = sel => {
+    if (sel === '[data-testid="model-selector-trigger"]') return [model];
+    if (sel === '[data-testid="agent-response"]') return [responseEl];
+    return [];
+  };
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  p.context.HU = m => m?.index;
+  p.context.React = { createElement: (type, props, ...children) => ({ type, props: props || {}, children }) };
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render() { if (mount.dataset?.agyPowertoolsRoot === 'ring') ringRenders++; },
+        unmount() {}
+      };
+    }
+  };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-long-51';
+  p.context.__agyNativeAdapter.fiber = () => {
+    fiberWalks++;
+    return { memoizedProps: { container: { steps: [{ step: { case: 'userInput' }, metadata: { index: 0 } }] } }, return: null };
+  };
+
+  let stateVersion = 1;
+  let stateRequests = 0;
+  const makeStateReply = () => ({
+    conversationId: 'conv-long-51',
+    modelName: 'Gemini 4 Carbon',
+    costUsd: 0.12,
+    contextWindow: { usedTokens: 42000 * stateVersion, maxTokens: 1000000, usedPercent: 4.2 * stateVersion, inputTokens: 1000, cacheReadTokens: 41000, categories: [] },
+    telemetry: { turnCount: 1, stepCount: 5, totalTokens: 45000 * stateVersion, requestCount: 2, errorCount: 0, toolCount: 1, tps: 88, latestTps: 88, cacheHitPercent: 97.6 },
+    progress: { status: 'complete', phase: 'done', phaseDetail: '', toolCount: 1, recentActivity: [], tasks: [] },
+    turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 4, status: 'complete', completedAtIso: '2026-11-25T00:00:00Z', durationMs: 4200, toolCalls: [] }],
+    requests: [{ id: 'req-1', timestampMs: 1_795_699_995_000 }],
+    errors: [],
+    settings: { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' }
+  });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' });
+      else if (req.method === 'state') { stateRequests++; p.context.__agyPowertoolsReceive(req.id, makeStateReply()); }
+      else p.context.__agyPowertoolsReceive(req.id, { ok: true });
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 25));
+
+  const initialRingRenders = ringRenders;
+  const initialFiberWalks = fiberWalks;
+  const initialStateReqs = stateRequests;
+  assert.ok(initialRingRenders >= 1);
+  assert.equal(initialFiberWalks, 1);
+
+  const mainPoll = intervals.find(i => i.ms === 2000);
+  assert.ok(mainPoll);
+
+  // Idle poll within 6s skips state IPC completely
+  fakeNow += 2000;
+  mainPoll.fn();
+  await new Promise(r => setTimeout(r, 15));
+  assert.equal(stateRequests, initialStateReqs);
+
+  // Idle poll after 6s fetches a brand-new JSON object with identical values -> 0 new ring renders and 0 new fiber walks
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(stateRequests, initialStateReqs + 1);
+  assert.equal(ringRenders, initialRingRenders);
+  assert.equal(fiberWalks, initialFiberWalks);
+
+  // When token usage actually changes, ring re-renders once while completed historical turn still skips fiber walk!
+  stateVersion = 2;
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(ringRenders, initialRingRenders + 1);
+  assert.equal(fiberWalks, initialFiberWalks);
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('SSH remote window hides local AccountSwitcher, preserves native settings button, and skips accounts.syncActive (Issue #57)', async () => {
+  const p = page(true);
+  p.context.sshRemote = { kind: 'ssh', host: 'devbox' };
+  const calls = [];
+  let mountedSwitcher = 0;
+  const settingsParent = { children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const settingsBtn = { isConnected: true, parentElement: settingsParent, nextSibling: null };
+  p.document.querySelector = sel => sel === '[data-testid="settings-button"]' ? settingsBtn : null;
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render() { if (mount.dataset?.agyPowertoolsRoot === 'account-switcher') mountedSwitcher++; },
+        unmount() {}
+      };
+    }
+  };
+  p.context.__agyPanels = () => ({ Page: () => null, Sidebar: () => null, AccountSwitcher: () => null, dispose() {} });
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.capabilities = () => ({ email: 'remote@example.com', name: 'Remote User' });
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: async () => ({ response: { groups: [] } })
+  });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    calls.push(req.method);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, accountSwitcher: true });
+      else p.context.__agyPowertoolsReceive(req.id, { ok: true, estimates: [] });
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, accountSwitcher: true };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 25));
+
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-account-switcher'), false);
+  assert.equal(mountedSwitcher, 0);
+  assert.equal(calls.includes('accounts.syncActive'), false);
+  assert.equal(calls.includes('accounts.list'), false);
+  p.context.__agyPowertools.dispose();
+});
+
+test('auto-check update banner shows one-click update/dismiss and optional autoInstallUpdates waits for idle same-major only (Issue #45)', async () => {
+  const timeouts = [];
+  const calls = [];
+  let runningIds = ['busy-conv-1'];
+  let remoteReply = {
+    status: 'available',
+    version: '2.17.0',
+    releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.17.0',
+    notes: '## 中文说明\n- **体验优化**：新增低频自动查更新与轻量提醒',
+    canInstall: true,
+    dismissedVersion: '',
+    clientUpgraded: false
+  };
+  const makeEl = tag => {
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      dataset: {},
+      style: {},
+      className: '',
+      textContent: '',
+      children: [],
+      listeners: new Map(),
+      isConnected: true,
+      append(...items) { this.children.push(...items); },
+      appendChild(item) { this.children.push(item); return item; },
+      remove() { this.isConnected = false; },
+      setAttribute() {},
+      getAttribute: () => null,
+      removeAttribute() {},
+      addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+    return el;
+  };
+  const body = makeEl('body');
+  const intervals = [];
+  const settings = { enabled: true, autoCheckUpdates: true, autoInstallUpdates: false, language: 'zh-CN' };
+  let capturedEnv = null;
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      head: makeEl('head'),
+      body,
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: tag => makeEl(tag),
+      addEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { userAgent: 'Antigravity/2.36.0' },
+    location: { pathname: '/c/conv-upd' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyPanels: env => { capturedEnv = env; return { dispose() {} }; },
+    __agyInitialSettings: { ...settings },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'conv-upd', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      calls.push(msg);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { ...settings });
+      else if (msg.method === 'settings.set') { Object.assign(settings, msg.settings); ctx.__agyPowertoolsReceive(msg.id, { ...settings }); }
+      else if (msg.method === 'update.autoCheck') ctx.__agyPowertoolsReceive(msg.id, { ...remoteReply });
+      else if (msg.method === 'update.dismiss') { remoteReply.dismissedVersion = msg.version; ctx.__agyPowertoolsReceive(msg.id, { ...remoteReply }); }
+      else if (msg.method === 'update.install') ctx.__agyPowertoolsReceive(msg.id, { status: 'preparing', version: msg.version });
+      else if (msg.method === 'update.status') ctx.__agyPowertoolsReceive(msg.id, { status: 'completed', version: '2.17.0' });
+      else ctx.__agyPowertoolsReceive(msg.id, {});
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: (fn, ms) => { const item = { fn, ms, cleared: false }; timeouts.push(item); return timeouts.length; },
+    clearTimeout: id => { if (timeouts[id - 1]) timeouts[id - 1].cleared = true; }
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+
+  // Trigger startup 15s update check timer
+  const startupCheck = timeouts.find(t => t.ms === 15000 && !t.cleared);
+  assert.ok(startupCheck);
+  startupCheck.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  const autoReq = calls.find(c => c.method === 'update.autoCheck');
+  assert.ok(autoReq);
+  assert.equal(autoReq.clientVersion, '2.36.0');
+  const banner = body.children.find(c => c.dataset?.testid === 'agy-update-prompt-banner' && c.isConnected);
+  assert.ok(banner, 'expected bottom-right update reminder banner');
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  assert.ok(walk(banner, n => n.dataset?.testid === 'agy-update-banner-install'));
+  const dismissBtn = walk(banner, n => n.dataset?.testid === 'agy-update-banner-dismiss');
+  assert.ok(dismissBtn);
+
+  // Clicking dismiss persists update.dismiss and removes banner
+  for (const fn of dismissBtn.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls.some(c => c.method === 'update.dismiss' && c.version === '2.17.0'), true);
+  assert.equal(banner.isConnected, false);
+
+  // New version arrives + autoInstallUpdates enabled -> waits while runningIds non-empty, then auto-installs once idle
+  remoteReply = { ...remoteReply, version: '2.18.0', dismissedVersion: '' };
+  await capturedEnv.change({ autoInstallUpdates: true });
+  await capturedEnv.checkForUpdateNotice({ force: true });
+  assert.equal(calls.some(c => c.method === 'update.install'), false, 'must wait while a turn is running');
+
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls.some(c => c.method === 'update.install' && c.version === '2.18.0'), true);
 
   ctx.__agyPowertools.dispose();
 });

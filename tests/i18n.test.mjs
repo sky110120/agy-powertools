@@ -168,3 +168,61 @@ test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots 
   const i18nSrc = readFileSync('lib/native-i18n.js', 'utf8');
   assert.ok(i18nSrc.includes('.post-body') && i18nSrc.includes('#ov-frame'));
 });
+
+test('localizer skips English text inside code editors, diff viewers, and monospace code surfaces (Issue #55)', () => {
+  const makeNode = (value, matchedSelectors = []) => ({
+    nodeValue: value,
+    parentElement: {
+      closest: sel => matchedSelectors.some(m => sel.includes(m)) ? {} : null
+    }
+  });
+  const nodes = [
+    makeNode('Settings', ['.monaco-editor']),
+    makeNode('Delete', ['.monaco-diff-editor']),
+    makeNode('Copy', ['[data-testid*="diff"]']),
+    makeNode('Review', ['.code-block']),
+    makeNode('Open File', ['.view-lines']),
+    makeNode('Settings', [])
+  ];
+  let idx = 0;
+  const document = {
+    nodeType: 9,
+    body: { nodeType: 1, getAttribute: () => null, closest: () => null, querySelectorAll: () => [] },
+    createTreeWalker: () => {
+      let i = 0;
+      return { nextNode: () => nodes[i++] || null };
+    },
+    querySelectorAll: () => []
+  };
+  const context = vm.createContext({
+    document,
+    NodeFilter: { SHOW_TEXT: 4 },
+    MutationObserver: class { observe() {} disconnect() {} },
+    __agyToZhTw: toZhTw
+  });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const loc = context.__agyI18n.localizer();
+  loc.apply('zh-CN', true);
+  assert.equal(nodes[0].nodeValue, 'Settings');
+  assert.equal(nodes[1].nodeValue, 'Delete');
+  assert.equal(nodes[2].nodeValue, 'Copy');
+  assert.equal(nodes[3].nodeValue, 'Review');
+  assert.equal(nodes[4].nodeValue, 'Open File');
+  assert.equal(nodes[5].nodeValue, '设置');
+  loc.dispose();
+});
+
+test('Skills and Customizations UI strings translate accurately in zh-CN and zh-TW (Issue #60)', () => {
+  const document = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [] };
+  const context = vm.createContext({ document, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe() {} disconnect() {} }, __agyToZhTw: toZhTw });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const t = context.__agyI18n.t;
+  assert.equal(t('Skills & Rules', 'zh-CN'), '技能与规则');
+  assert.equal(t('Skills & Rules', 'zh-TW'), '技能與規則');
+  assert.equal(t('Active Skills', 'zh-CN'), '已启用技能');
+  assert.equal(t('Enable Recommended Skills', 'zh-TW'), '啟用推薦技能');
+  assert.equal(t('Browse the Marketplace', 'zh-CN'), '浏览插件市场');
+  assert.equal(t('No skills or rules yet.', 'zh-TW'), '暫無技能或規則。');
+  assert.equal(t('Delete Skill', 'zh-CN'), '删除技能');
+  assert.equal(t('Copy Config File Path', 'zh-TW'), '複製設定檔路徑');
+});

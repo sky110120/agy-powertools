@@ -220,6 +220,31 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.16.3
+- **Fix Windows non-TUN proxy relaunch antivirus blocks (#53)**: Removed `-EncodedCommand`, `ShellWindows` DCOM, `CreateProcessW`, and `.vbs`; creates a temporary `.lnk` inside plugin data via a plain `-File` script and launches it via `explorer.exe` (cleaning up `.lnk`, `.ack`, and `.ps1` afterward), avoiding Windows Defender AMSI and Huorong blocks; verifies `--proxy-server=` on the relaunched process when proxy mode is enabled.
+- **Fix repeated Terms of Service dialog after switching accounts (#59)**: Tracks per-account onboarding acceptance and `isGcpTos` from `app_storage.json`, and atomically syncs `agy.onboarding.lastLoginUsername` and `agy.onboarding.lastLoginIsGcpTos` after Antigravity exits and before relaunching (first-time newly added accounts still show the native prompt once).
+- **Add automatic update checks, reminders, and optional idle hot-update (#45)**: Adds "Automatically check for updates" (on by default; checks every 12 hours and when Antigravity upgrades) and "Auto-install updates when idle" (off by default; same-major updates when all conversations are idle) under About; displays a clickable "New" badge on the Powertools sidebar item (follows client accent color and jumps straight to Settings -> About), a status dot on the titlebar trigger, and a native-styled bottom-right reminder card.
+- **Complete native Skills and Customizations localization (#60)**: Added untranslated Antigravity 2.35.1 UI strings for Skills, Customizations, Marketplace, and MCP management views, along with Traditional Chinese (`zh-TW`) mappings.
+
+### v2.16.2
+- **Fix long-conversation periodic stutter and Windows IME flicker (#51)**: Replaced object-reference checks with value signatures for composer ring and state polling, switched completed turn caching to O(1) index/value checks, added scroll deferral, and backed off idle state polling to 6s.
+- **Fix initial restored conversation inline edit (#58)**: Intercepts `Enter` and Send clicks in capture phase on the inline edit host to revert, restore the composer, and resend directly.
+- **Exclude code and diff views from localization (#55)**: Excluded Monaco editors, diff viewers, code blocks, and monospace containers from UI translation.
+- **Fix SSH remote window account display (#57)**: Isolates SSH remote windows from the local multi-account store, keeps the native Settings button visible, skips local sync/auto-switch, and prefers live capabilities email on local windows.
+- **Copyable Google OAuth link when adding an account (#56)**: Displays the raw OAuth login URL with Copy and Cancel controls while sign-in is active.
+- **Cold-relaunch and auto-switch hardening (PR #52, thanks `@Hi-Jiajun`)**: Escalates lingering POSIX relaunch processes to `SIGKILL`, resolves Linux symlinks, preserves user system proxy env when plugin proxy is off, resets `switchingInProgress` when `relaunching` is false, and preserves `depletedGroupKey` across deferrals.
+
+### v2.16.1
+- **Non-TUN proxy cold-start auto-relaunch**: Detects configured but inactive proxy on sidecar boot and relaunches once when the local proxy port is reachable (with cooldown and circuit breaker), plus a manual relaunch button in the sidecar pane.
+- **Fix SSH Overview default filter showing zero (#49)**: Disables local account filtering on SSH remote dashboards and falls back to all accounts when no attributed rows exist.
+- **Copy final answer only (#50)**: Intercepts the response toolbar Copy button to filter intermediate stage updates and tool summaries while keeping native copy feedback.
+- **Post-`/compact` context usage estimate (#48)**: Estimates post-compaction usage immediately from completed `CHECKPOINT` steps until exact provider usage arrives on the next request.
+- **Auto-switch safeguards (PR #42, thanks `@Hi-Jiajun`)**: Adds model compatibility validation, cross-tab running-turn detection, an interactive countdown banner, and active weekly-timer priority ranking.
+
+### v2.16.0
+- **Progress 3D particle orb and UI updates**: Updated task progress to a 128-particle monochrome 3D orb; streamlined Pricing into Standard list vs API promo modes (PR #39); removed the 32-item subagent telemetry cap (PR #41); replaced raw title tooltips with theme-adaptive popovers (PR #43); added chat image right-click actions (#40).
+- **Smaller update bundle and proxy downloads**: Excluded `docs/images/` from release bundles (~540 KB); added HTTP/SOCKS5 proxy support for update checks and downloads (#44); cleared stale "Updated" state after upgrading (#47).
+
 ### v2.15.5
 - **macOS single-app launch with automatic cold-start relaunch**:
   - No longer creates a duplicate `~/Applications/Antigravity (Powertools).app` wrapper (automatically cleans up legacy wrappers on upgrade) so you simply open the original `/Applications/Antigravity.app`.
